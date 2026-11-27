@@ -597,7 +597,7 @@ export const DocumentVaultPage: React.FC = () => {
       <div>
         <h1 className="text-xl font-bold text-slate-900">დოკუმენტების საცავი</h1>
         <p className="text-xs text-slate-600 mt-0.5">
-          Firebase Storage-ში ატვირთული ფაილების ერთიანი სია, ვერსიების კონტროლი, გადახედვა და ძებნა
+          მონაცემთა ბაზაში შენახული ფაილების ერთიანი სია, ვერსიების კონტროლი, გადახედვა და ძებნა
         </p>
       </div>
 

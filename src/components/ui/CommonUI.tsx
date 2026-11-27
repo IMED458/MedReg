@@ -693,8 +693,8 @@ export const FileUploader: React.FC<{
       await refreshData();
       notify(
         files.length > 1
-          ? `${files.length} ფაილი წარმატებით აიტვირთა Firebase Storage-ში.`
-          : `ფაილი „${lastAtt?.fileName}“ წარმატებით აიტვირთა Firebase Storage-ში.`,
+          ? `${files.length} ფაილი წარმატებით შეინახა მონაცემთა ბაზაში.`
+          : `ფაილი „${lastAtt?.fileName}“ წარმატებით შეინახა მონაცემთა ბაზაში.`,
         'success'
       );
       if (onUploaded && lastAtt) onUploaded(lastAtt);
@@ -818,7 +818,7 @@ export const FileUploader: React.FC<{
             ჩააგდეთ ფაილი აქ ან აირჩიეთ მოწყობილობიდან (PDF, DOCX, XLSX, JPG, PNG, TXT, CSV — მაქს. 15 MB)
           </p>
           <p className="mt-0.5 text-slate-500">
-            ფაილი დაშიფრული კავშირით იტვირთება Firebase Storage-ში და ხელმისაწვდომია მხოლოდ ავტორიზებული მომხმარებლებისთვის.
+            ფაილი ნაწილებად ინახება Firestore-ის მონაცემთა ბაზაში და cache-დება ამ მოწყობილობაზე.
           </p>
         </div>
         <div className="shrink-0">
@@ -877,7 +877,7 @@ export const AttachmentList: React.FC<{
     }
     const url = await storageProvider.getFileDownloadUrl(att.blobKey);
     if (!url) {
-      notify('ფაილი Firebase Storage-ში ვერ მოიძებნა.', 'error');
+      notify('ფაილი მონაცემთა ბაზაში ვერ მოიძებნა.', 'error');
       return;
     }
     const a = document.createElement('a');

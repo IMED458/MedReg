@@ -3,7 +3,7 @@ import { authService } from '../auth/AuthService';
 import { dataRepo, WorkspaceSnapshot } from '../repositories/DataRepository';
 import { PermissionAction, SafeUser } from '../models/types';
 import { CaseFilterCriteria, hasPermission } from '../utils/caseLogic';
-import { startLiveSync } from '../firebase/cloudSync';
+import { flushCloudWrites, startLiveSync } from '../firebase/cloudSync';
 
 export type NavPageId =
   | 'dashboard'
@@ -115,6 +115,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const data = await dataRepo.loadAll();
       setSnapshot(data);
+      void flushCloudWrites();
     } catch (err) {
       console.error('Failed loading workspace snapshot');
       notify(err instanceof Error ? err.message : 'მონაცემების ჩატვირთვა ვერ მოხერხდა.', 'error');
@@ -144,17 +145,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     if (!currentUser) return;
-    let lastErrorAt = 0;
     return startLiveSync(
       () => void refreshData(),
-      (error) => {
-        console.error('Firebase live sync failed', error);
-        const now = Date.now();
-        if (now - lastErrorAt > 5000) {
-          lastErrorAt = now;
-          notify(`Firebase სინქრონიზაციის შეცდომა: ${error.message}`, 'error');
-        }
-      }
+      () => {}
     );
   }, [currentUser, notify, refreshData]);
 
@@ -194,9 +187,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   );
 
   const logout = useCallback(async () => {
-    await authService.logout();
-    setCurrentUser(null);
-    setSnapshot(null);
+    const user = await authService.getCurrentUser();
+    setCurrentUser(user);
     setActiveCaseId(null);
     setActivePage('dashboard');
     setRevealSensitive(false);

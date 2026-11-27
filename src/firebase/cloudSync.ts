@@ -54,6 +54,7 @@ type PendingChange =
 
 let captureSuspended = 0;
 let hooksRegistered = false;
+let syncWarningShown = false;
 const pendingChanges = new Map<string, PendingChange>();
 let liveUnsubscribers: Unsubscribe[] = [];
 
@@ -142,7 +143,10 @@ export async function flushCloudWrites(): Promise<void> {
     for (const change of changes) {
       pendingChanges.set(keyFor(change.table, change.key), change);
     }
-    throw error;
+    if (!syncWarningShown) {
+      syncWarningShown = true;
+      console.info('Firestore is unavailable; changes remain queued in the local cache.');
+    }
   }
 }
 
@@ -197,6 +201,14 @@ export function stopLiveSync(): void {
 export function startLiveSync(onDataChanged: () => void, onError: (error: Error) => void): () => void {
   stopLiveSync();
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let listenerFailed = false;
+
+  const handleListenerError = (error: Error) => {
+    if (listenerFailed) return;
+    listenerFailed = true;
+    stopLiveSync();
+    onError(error);
+  };
 
   const scheduleRefresh = () => {
     if (refreshTimer) clearTimeout(refreshTimer);
@@ -218,10 +230,10 @@ export function startLiveSync(onDataChanged: () => void, onError: (error: Error)
           });
           if (snapshot.docChanges().length > 0) scheduleRefresh();
         } catch (error) {
-          onError(error instanceof Error ? error : new Error('Firebase live sync failed.'));
+          handleListenerError(error instanceof Error ? error : new Error('Firestore live sync failed.'));
         }
       },
-      (error) => onError(error)
+      (error) => handleListenerError(error)
     );
     liveUnsubscribers.push(unsubscribe);
   }

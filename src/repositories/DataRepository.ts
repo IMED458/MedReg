@@ -1,7 +1,6 @@
 import JSZip from 'jszip';
 import { db } from '../storage/db';
 import { storageProvider } from '../storage/StorageProvider';
-import { authService } from '../auth/AuthService';
 import { flushCloudWrites } from '../firebase/cloudSync';
 import { doc, runTransaction } from 'firebase/firestore';
 import { firestore } from '../firebase/client';
@@ -45,6 +44,7 @@ import {
   findMatchingOrganization,
   formatCaseNumber,
   generateUuid,
+  getNextSequenceForYear,
   getTbilisiDateISO,
 } from '../utils/caseLogic';
 
@@ -187,13 +187,21 @@ export class DexieRepository {
     const targetYear = year || Number(getTbilisiDateISO().slice(0, 4));
     const settings = await this.ensureSettings();
     const counterRef = doc(firestore, 'counters', String(targetYear));
-    const nextSeq = await runTransaction(firestore, async (transaction) => {
-      const remoteCounter = await transaction.get(counterRef);
-      const current = remoteCounter.exists() ? Number(remoteCounter.data().lastSequence || 0) : 0;
-      const next = current + 1;
-      transaction.set(counterRef, { year: targetYear, lastSequence: next });
-      return next;
-    });
+    let nextSeq: number;
+    try {
+      nextSeq = await runTransaction(firestore, async (transaction) => {
+        const remoteCounter = await transaction.get(counterRef);
+        const current = remoteCounter.exists() ? Number(remoteCounter.data().lastSequence || 0) : 0;
+        const next = current + 1;
+        transaction.set(counterRef, { year: targetYear, lastSequence: next });
+        return next;
+      });
+    } catch (error) {
+      console.warn('Firestore counter unavailable; allocating from the local cache.', error);
+      const counter = await db.counters.get(targetYear);
+      const casesInYear = await db.cases.where('sequenceYear').equals(targetYear).toArray();
+      nextSeq = getNextSequenceForYear(counter?.lastSequence || 0, casesInYear);
+    }
     await db.counters.put({ year: targetYear, lastSequence: nextSeq });
     return {
       caseNumber: formatCaseNumber(settings.caseNumberPrefix, settings.caseNumberYearFormat, targetYear, nextSeq),

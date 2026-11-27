@@ -463,8 +463,8 @@ export const UsersManagementPage: React.FC = () => {
       <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 px-4 py-2.5 text-xs text-emerald-950 flex items-start gap-2">
         <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 text-emerald-700" />
         <span>
-          <strong>Firebase Auth აქტიურია:</strong> აქ შექმნილი ანგარიში დაუყოვნებლივ ხელმისაწვდომი იქნება ყველა მოწყობილობაზე;
-          პროფილი და როლი Firestore-ში სინქრონდება.
+          <strong>ღია წვდომის რეჟიმი:</strong> პროგრამა ავტორიზაციის გარეშე იხსნება. მომხმარებლების პროფილები და როლები
+          Firestore-ში სინქრონდება.
         </span>
       </div>
 
@@ -1007,7 +1007,7 @@ export const SettingsPage: React.FC = () => {
               <h2 className="text-sm font-semibold text-slate-900">სრული სარეზერვო ექსპორტი და აღდგენა (JSON / ZIP)</h2>
             </div>
             <p className="text-xs text-slate-600">
-              ZIP არქივი შეიცავს Firestore-ის ყველა ჩანაწერს და Firebase Storage-ში შენახულ ფაილებს.
+              ZIP არქივი შეიცავს Firestore-ის ყველა ჩანაწერსა და მონაცემთა ბაზაში ნაწილებად შენახულ ფაილებს.
             </p>
             <div className="flex flex-wrap gap-2.5">
               <button
@@ -1116,7 +1116,7 @@ export const SettingsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Firebase storage and synchronization status */}
+          {/* Firestore storage and synchronization status */}
           <div className="rounded-xl border border-slate-200 bg-white p-5 text-xs space-y-2">
             <h2 className="text-sm font-semibold text-slate-900">შენახვის სტატუსი და Firebase ინტეგრაციის მდგომარეობა</h2>
             <p>
@@ -1124,8 +1124,8 @@ export const SettingsPage: React.FC = () => {
               <strong>{storageInfo?.fileCount ?? 0}</strong> ({((storageInfo?.usedBytes ?? 0) / (1024 * 1024)).toFixed(2)} MB)
             </p>
             <p>
-              <strong>Firebase Auth / Firestore / Cloud Storage:</strong>{' '}
-              <span className="text-emerald-700 font-medium">დაკავშირებულია · Live Sync აქტიურია</span>
+              <strong>Cloud Firestore:</strong>{' '}
+              <span className="text-emerald-700 font-medium">Live Sync და ფაილების database storage აქტიურია</span>
             </p>
             <p className="text-slate-500">
               Dexie გამოიყენება მხოლოდ სწრაფი ოფლაინ cache-ისთვის; ცვლილებების source-of-truth არის Firebase.

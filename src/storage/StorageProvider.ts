@@ -1,14 +1,7 @@
 import { db } from './db';
 import { generateUuid, validateUploadFile } from '../utils/caseLogic';
-import {
-  deleteObject,
-  getDownloadURL,
-  getMetadata,
-  listAll,
-  ref,
-  uploadBytes,
-} from 'firebase/storage';
-import { firebaseStorage } from '../firebase/client';
+import { Bytes, doc, getDoc, getDocs, collection, writeBatch } from 'firebase/firestore';
+import { firestore } from '../firebase/client';
 
 export interface StoredFileMeta {
   blobKey: string;
@@ -18,7 +11,7 @@ export interface StoredFileMeta {
 }
 
 export interface IStorageProvider {
-  readonly mode: 'indexeddb' | 'firebase_storage' | 's3_b2_proxy';
+  readonly mode: 'indexeddb' | 'firestore';
   saveFile(file: File): Promise<StoredFileMeta>;
   saveBlob(blobKey: string, fileName: string, mimeType: string, blob: Blob): Promise<void>;
   getFileBlob(blobKey: string): Promise<Blob | null>;
@@ -105,42 +98,32 @@ export class IndexedDbStorageProvider implements IStorageProvider {
   }
 }
 
-/**
- * მომავალი ღრუბლოვანი საცავის ინტერფეისი (Firebase Storage ან სერვერული პროქსი Backblaze B2/S3-სთვის).
- * კონფიგურირდება მხოლოდ .env და სერვერული ავტორიზაციის ჩართვის შემდეგ.
- */
-export class CloudStorageProviderStub implements IStorageProvider {
-  readonly mode: 'firebase_storage' | 's3_b2_proxy';
+export class FirestoreFileProvider implements IStorageProvider {
+  readonly mode = 'firestore' as const;
+  private readonly localCache = new IndexedDbStorageProvider();
+  private readonly chunkSize = 600 * 1024;
 
-  constructor(mode: 'firebase_storage' | 's3_b2_proxy' = 'firebase_storage') {
-    this.mode = mode;
-  }
-
-  async saveFile(): Promise<StoredFileMeta> {
-    throw new Error('ღრუბლოვანი საცავი ჯერ არ არის დაკავშირებული. გთხოვთ გამოიყენოთ ლოკალური IndexedDB რეჟიმი.');
-  }
-  async saveBlob(): Promise<void> {
-    throw new Error('ღრუბლოვანი საცავი ჯერ არ არის დაკავშირებული.');
-  }
-  async getFileBlob(): Promise<Blob | null> {
-    throw new Error('ღრუბლოვანი საცავი ჯერ არ არის დაკავშირებული.');
-  }
-  async getFileDownloadUrl(): Promise<string | null> {
-    throw new Error('ღრუბლოვანი საცავი ჯერ არ არის დაკავშირებული.');
-  }
-  async deleteFile(): Promise<void> {
-    throw new Error('ღრუბლოვანი საცავი ჯერ არ არის დაკავშირებული.');
-  }
-  async getStorageUsageEstimate(): Promise<{ usedBytes: number; quotaBytes: number; fileCount: number }> {
-    return { usedBytes: 0, quotaBytes: 0, fileCount: 0 };
-  }
-}
-
-export class FirebaseStorageProvider implements IStorageProvider {
-  readonly mode = 'firebase_storage' as const;
-
-  private fileRef(blobKey: string) {
-    return ref(firebaseStorage, `files/${blobKey}`);
+  private async persist(blobKey: string, fileName: string, mimeType: string, blob: Blob): Promise<void> {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const chunkCount = Math.ceil(bytes.length / this.chunkSize);
+    const batch = writeBatch(firestore);
+    batch.set(doc(firestore, 'file_blobs', blobKey), {
+      blobKey,
+      fileName,
+      mimeType,
+      sizeBytes: blob.size,
+      chunkCount,
+      createdAt: new Date().toISOString(),
+    });
+    for (let index = 0; index < chunkCount; index += 1) {
+      const part = bytes.slice(index * this.chunkSize, (index + 1) * this.chunkSize);
+      batch.set(doc(firestore, 'file_chunks', `${blobKey}_${index}`), {
+        blobKey,
+        index,
+        data: Bytes.fromUint8Array(part),
+      });
+    }
+    await batch.commit();
   }
 
   async saveFile(file: File): Promise<StoredFileMeta> {
@@ -148,57 +131,79 @@ export class FirebaseStorageProvider implements IStorageProvider {
     if (!check.valid) throw new Error(check.error || 'ფაილის შემოწმება ვერ მოხერხდა.');
     const blobKey = `blob_${generateUuid()}`;
     const mimeType = file.type || 'application/octet-stream';
-    await uploadBytes(this.fileRef(blobKey), file, {
-      contentType: mimeType,
-      customMetadata: { originalFileName: file.name },
-    });
+    await this.localCache.saveBlob(blobKey, file.name, mimeType, file);
+    try {
+      await this.persist(blobKey, file.name, mimeType, file);
+    } catch (error) {
+      console.warn('Firestore file upload unavailable; retained in the local cache.', error);
+    }
     return { blobKey, fileName: file.name, mimeType, sizeBytes: file.size };
   }
 
   async saveBlob(blobKey: string, fileName: string, mimeType: string, blob: Blob): Promise<void> {
-    await uploadBytes(this.fileRef(blobKey), blob, {
-      contentType: mimeType || 'application/octet-stream',
-      customMetadata: { originalFileName: fileName },
-    });
+    await this.localCache.saveBlob(blobKey, fileName, mimeType, blob);
+    try {
+      await this.persist(blobKey, fileName, mimeType, blob);
+    } catch (error) {
+      console.warn('Firestore file upload unavailable; retained in the local cache.', error);
+    }
   }
 
   async getFileBlob(blobKey: string): Promise<Blob | null> {
     try {
-      const url = await getDownloadURL(this.fileRef(blobKey));
-      const response = await fetch(url);
-      if (!response.ok) return null;
-      return response.blob();
+      const metaSnapshot = await getDoc(doc(firestore, 'file_blobs', blobKey));
+      if (!metaSnapshot.exists()) return this.localCache.getFileBlob(blobKey);
+      const meta = metaSnapshot.data() as { mimeType: string; chunkCount: number };
+      const chunkSnapshots = await Promise.all(
+        Array.from({ length: meta.chunkCount }, (_, index) =>
+          getDoc(doc(firestore, 'file_chunks', `${blobKey}_${index}`))
+        )
+      );
+      if (chunkSnapshots.some((item) => !item.exists())) return this.localCache.getFileBlob(blobKey);
+      return new Blob(
+        chunkSnapshots.map((item) => Uint8Array.from((item.data()!.data as Bytes).toUint8Array()).buffer),
+        { type: meta.mimeType }
+      );
     } catch {
-      return null;
+      return this.localCache.getFileBlob(blobKey);
     }
   }
 
   async getFileDownloadUrl(blobKey: string): Promise<string | null> {
     try {
-      return await getDownloadURL(this.fileRef(blobKey));
-    } catch {
-      return null;
-    }
+      const blob = await this.getFileBlob(blobKey);
+      return blob ? URL.createObjectURL(blob) : null;
+    } catch { return null; }
   }
 
   async deleteFile(blobKey: string): Promise<void> {
     try {
-      await deleteObject(this.fileRef(blobKey));
+      const metaSnapshot = await getDoc(doc(firestore, 'file_blobs', blobKey));
+      const chunkCount = metaSnapshot.exists() ? Number(metaSnapshot.data().chunkCount || 0) : 0;
+      const batch = writeBatch(firestore);
+      batch.delete(doc(firestore, 'file_blobs', blobKey));
+      for (let index = 0; index < chunkCount; index += 1) {
+        batch.delete(doc(firestore, 'file_chunks', `${blobKey}_${index}`));
+      }
+      await batch.commit();
     } catch (error) {
-      const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
-      if (code !== 'storage/object-not-found') throw error;
+      console.warn('Firestore file deletion unavailable; local cache was still cleared.', error);
     }
+    await this.localCache.deleteFile(blobKey);
   }
 
   async getStorageUsageEstimate(): Promise<{ usedBytes: number; quotaBytes: number; fileCount: number }> {
-    const listing = await listAll(ref(firebaseStorage, 'files'));
-    const metadata = await Promise.all(listing.items.map((item) => getMetadata(item)));
-    return {
-      usedBytes: metadata.reduce((total, item) => total + item.size, 0),
-      quotaBytes: 0,
-      fileCount: metadata.length,
-    };
+    try {
+      const snapshot = await getDocs(collection(firestore, 'file_blobs'));
+      return {
+        usedBytes: snapshot.docs.reduce((total, item) => total + Number(item.data().sizeBytes || 0), 0),
+        quotaBytes: 0,
+        fileCount: snapshot.size,
+      };
+    } catch {
+      return this.localCache.getStorageUsageEstimate();
+    }
   }
 }
 
-export const storageProvider: IStorageProvider = new FirebaseStorageProvider();
+export const storageProvider: IStorageProvider = new FirestoreFileProvider();

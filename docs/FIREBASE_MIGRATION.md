@@ -1,31 +1,26 @@
-# Firebase deployment
+# Firestore deployment
 
-აპლიკაციის production source-of-truth არის Firebase:
+აპლიკაცია მუშაობს ავტორიზაციის ეკრანის გარეშე და ყოველ refresh-ზე პირდაპირ სამუშაო პანელს ხსნის.
 
-- Firebase Authentication — Email/Password ანგარიშები;
-- Cloud Firestore — ყველა სტრუქტურირებული მონაცემი და live sync;
-- Firebase Storage — ატვირთული ფაილები;
-- Dexie/IndexedDB — მხოლოდ სწრაფი ოფლაინ cache.
+## მონაცემები
 
-## Firebase Console-ის ერთჯერადი მომზადება
+- ყველა სტრუქტურირებული ჩანაწერი ინახება Cloud Firestore-ის ცალკეულ კოლექციაში.
+- live snapshot listeners ცვლილებებს მოწყობილობებს შორის სინქრონებს.
+- Dexie/IndexedDB გამოიყენება ოფლაინ cache-ად, ამიტომ Firestore-ის დროებითი მიუწვდომლობა გვერდს არ ბლოკავს.
+- ქეისის ნომერი ჩვეულებრივ Firestore transaction-ით გამოიყოფა; ქსელის გათიშვისას გამოიყენება ადგილობრივი მთვლელი.
 
-1. Authentication → Sign-in method-ში ჩართეთ **Email/Password**.
-2. შექმენით Firestore Database და Storage bucket.
-3. რეპოზიტორიის root-დან გაუშვით:
+## ფაილები
+
+Firebase Storage არ გამოიყენება. ფაილის metadata ინახება `file_blobs` კოლექციაში, შიგთავსი კი 600 KiB-იან ნაწილებად `file_chunks` კოლექციაში. ეს იცავს Firestore-ის ერთ დოკუმენტზე დაწესებულ ზომის ლიმიტს. ფაილი დამატებით cache-დება IndexedDB-ში.
+
+## Deploy
+
+Firestore Database-ის შექმნის შემდეგ:
 
 ```bash
 npm install
 npm run build
-npx firebase-tools login
 npx firebase-tools deploy --project docrama-1a7b9
 ```
 
-ბრძანება განათავსებს Hosting build-ს, `firestore.rules`, ინდექსებსა და `storage.rules`-ს.
-
-## პირველი ადმინისტრატორი
-
-პირველ გაშვებაზე შედით `imedo` / `imed458` მონაცემებით. თუ ანგარიში ჯერ არ არსებობს, აპლიკაცია შექმნის Firebase Auth მომხმარებელსა და `users/{uid}` admin პროფილს. პირველივე შესვლის შემდეგ შეცვალეთ საწყისი პაროლი.
-
-## სინქრონიზაცია
-
-ყველა repository mutation ჯერ სრულდება ადგილობრივ cache-ში და შემდეგ, ოპერაციის წარმატებულად დასრულებამდე, Firestore batch-ში ინახება. Firestore snapshot listeners სხვა მომხმარებლებისა და მოწყობილობების ცვლილებებს რეალურ დროში აბრუნებს UI-ში. ქეისის ნომერი გამოიყოფა Firestore transaction-ით, რათა პარალელურ მომხმარებლებს ერთნაირი ნომერი არ მიენიჭოთ.
+რადგან მოთხოვნის შესაბამისად ავტორიზაცია გამორთულია, `firestore.rules` მონაცემთა ბაზას საჯარო read/write წვდომას აძლევს. ინტერნეტში საჯაროდ განთავსების შემთხვევაში ეს კონფიგურაცია მხოლოდ მაშინ გამოიყენეთ, თუ მონაცემთა ღია წვდომა მისაღებია.

@@ -1,11 +1,5 @@
 import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
-import {
-  initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
-} from 'firebase/firestore';
-import { getStorage } from 'firebase/storage';
+import { getFirestore } from 'firebase/firestore';
 
 export const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || 'AIzaSyBdWn1wFQYSoFEiulrkcK-CjZUPnojRLlQ',
@@ -18,10 +12,4 @@ export const firebaseConfig = {
 };
 
 export const firebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-export const firebaseAuth = getAuth(firebaseApp);
-export const firestore = initializeFirestore(firebaseApp, {
-  ignoreUndefinedProperties: true,
-  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
-});
-export const firebaseStorage = getStorage(firebaseApp);
-
+export const firestore = getFirestore(firebaseApp);

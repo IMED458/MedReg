@@ -36,8 +36,8 @@ export interface AuditBase {
 
 export interface User extends AuditBase {
   username: string;
-  passwordHash: string; // Legacy backup compatibility only; Firebase profiles store an empty value.
-  passwordSalt: string; // Passwords and hashes are managed exclusively by Firebase Auth.
+  passwordHash: string; // Local profile-management compatibility; there is no login gate.
+  passwordSalt: string;
   fullName: string;
   position: string;
   department: string;
