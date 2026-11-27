@@ -1,0 +1,26 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function activeUser() {
+      return request.auth != null
+        && firestore.exists(/databases/(default)/documents/users/$(request.auth.uid))
+        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.isActive == true;
+    }
+
+    function canManageFiles() {
+      return activeUser()
+        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role
+          in ['admin', 'supervisor', 'inspector'];
+    }
+
+    match /files/{blobKey} {
+      allow read: if activeUser();
+      allow create, update: if canManageFiles()
+        && request.resource.size <= 15 * 1024 * 1024
+        && request.resource.contentType.matches(
+          'application/pdf|application/msword|application/vnd\\.openxmlformats-officedocument\\.wordprocessingml\\.document|application/vnd\\.ms-excel|application/vnd\\.openxmlformats-officedocument\\.spreadsheetml\\.sheet|image/jpeg|image/png|text/plain|text/csv|application/octet-stream'
+        );
+      allow delete: if canManageFiles();
+    }
+  }
+}

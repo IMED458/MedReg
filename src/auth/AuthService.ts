@@ -1,6 +1,25 @@
 import { db } from '../storage/db';
 import { SafeUser, User } from '../models/types';
 import { generateUuid } from '../utils/caseLogic';
+import { deleteApp, getApp, getApps, initializeApp } from 'firebase/app';
+import {
+  EmailAuthProvider,
+  browserLocalPersistence,
+  createUserWithEmailAndPassword,
+  getAuth,
+  reauthenticateWithCredential,
+  setPersistence,
+  signInWithEmailAndPassword,
+  signOut,
+  updatePassword,
+} from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
+import { firebaseAuth, firebaseConfig, firestore } from '../firebase/client';
+import {
+  prepareCloudWorkspace,
+  saveCloudDocument,
+  withoutCloudCapture,
+} from '../firebase/cloudSync';
 
 const SESSION_STORAGE_KEY = 'medreg_local_session_user_id';
 
@@ -46,6 +65,7 @@ export interface IAuthAdapter {
   changeOwnPassword(userId: string, currentPassword: string, newPassword: string): Promise<void>;
   setUserPasswordAdmin(targetUserId: string, newPassword: string, adminUserId: string): Promise<void>;
   createLocalPasswordRecord(password: string): Promise<{ passwordHash: string; passwordSalt: string }>;
+  createUserAccount(username: string, password: string): Promise<{ id: string; passwordHash: string; passwordSalt: string }>;
 }
 
 export class LocalAuthAdapter implements IAuthAdapter {
@@ -85,6 +105,11 @@ export class LocalAuthAdapter implements IAuthAdapter {
     const salt = generateUuid();
     const passwordHash = await hashPasswordWithSalt(password, salt);
     return { passwordHash, passwordSalt: salt };
+  }
+
+  async createUserAccount(username: string, password: string): Promise<{ id: string; passwordHash: string; passwordSalt: string }> {
+    const credentials = await this.createLocalPasswordRecord(password);
+    return { id: generateUuid(), ...credentials };
   }
 
   async login(username: string, password: string): Promise<SafeUser> {
@@ -183,25 +208,188 @@ export class LocalAuthAdapter implements IAuthAdapter {
 /**
  * მომავალი Firebase Auth ადაპტერის ინტერფეისი.
  */
-export class FirebaseAuthAdapterStub implements IAuthAdapter {
+function usernameToEmail(username: string): string {
+  const normalized = username.trim().toLowerCase();
+  if (normalized === 'imedo') return 'imedo@medreg.local';
+  const encoded = Array.from(new TextEncoder().encode(normalized))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+  return `u_${encoded}@medreg.local`;
+}
+
+function authErrorMessage(error: unknown): string {
+  const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
+  if (code === 'auth/operation-not-allowed') {
+    return 'Firebase Console-ში ჩართეთ Authentication → Email/Password ავტორიზაცია.';
+  }
+  if (code === 'auth/invalid-credential' || code === 'auth/user-not-found' || code === 'auth/wrong-password') {
+    return 'მომხმარებლის სახელი ან პაროლი არასწორია.';
+  }
+  if (code === 'auth/too-many-requests') return 'სისტემა დროებით დაბლოკილია ბევრი მცდელობის გამო. სცადეთ მოგვიანებით.';
+  if (code === 'auth/email-already-in-use') return 'ეს მომხმარებლის სახელი უკვე რეგისტრირებულია.';
+  if (code === 'auth/weak-password') return 'პაროლი უნდა შეიცავდეს მინიმუმ 6 სიმბოლოს.';
+  return error instanceof Error ? error.message : 'Firebase ავტორიზაცია ვერ მოხერხდა.';
+}
+
+function initialAdmin(uid: string): User {
+  const now = new Date().toISOString();
+  return {
+    id: uid,
+    username: 'imedo',
+    passwordHash: '',
+    passwordSalt: '',
+    fullName: 'იმედო (ადმინისტრატორი)',
+    position: 'სისტემის ადმინისტრატორი',
+    department: 'სამედიცინო საქმიანობის კონტროლის სამსახური',
+    phone: '',
+    email: 'imedo@medreg.local',
+    role: 'admin',
+    isActive: true,
+    mustChangePassword: true,
+    createdAt: now,
+    updatedAt: now,
+    createdBy: uid,
+    updatedBy: uid,
+  };
+}
+
+export class FirebaseAuthAdapter implements IAuthAdapter {
   readonly mode = 'firebase' as const;
-  async ensureInitialAdmin(): Promise<void> {}
-  async login(): Promise<SafeUser> {
-    throw new Error('Firebase Auth ჯერ არ არის კონფიგურირებული.');
+
+  async ensureInitialAdmin(): Promise<void> {
+    // The first admin is securely bootstrapped during the first successful login.
   }
-  async logout(): Promise<void> {}
+
+  async login(username: string, password: string): Promise<SafeUser> {
+    const normalized = username.trim().toLowerCase();
+    if (!normalized || !password) throw new Error('გთხოვთ შეიყვანოთ მომხმარებლის სახელი და პაროლი.');
+    await setPersistence(firebaseAuth, browserLocalPersistence);
+
+    let credential;
+    try {
+      credential = await signInWithEmailAndPassword(firebaseAuth, usernameToEmail(normalized), password);
+    } catch (error) {
+      const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
+      const canBootstrap = normalized === 'imedo' && password === 'imed458' &&
+        ['auth/invalid-credential', 'auth/user-not-found'].includes(code);
+      if (!canBootstrap) throw new Error(authErrorMessage(error));
+      try {
+        credential = await createUserWithEmailAndPassword(firebaseAuth, usernameToEmail(normalized), password);
+      } catch (createError) {
+        throw new Error(authErrorMessage(createError));
+      }
+    }
+
+    try {
+      const profileRef = doc(firestore, 'users', credential.user.uid);
+      const profileSnapshot = await getDoc(profileRef);
+      let profile = profileSnapshot.exists() ? profileSnapshot.data() as User : null;
+      if (!profile && normalized === 'imedo') {
+        profile = initialAdmin(credential.user.uid);
+        await saveCloudDocument('users', profile.id, profile);
+      }
+      if (!profile) {
+        await signOut(firebaseAuth);
+        throw new Error('მომხმარებლის პროფილი Firestore-ში ვერ მოიძებნა. მიმართეთ ადმინისტრატორს.');
+      }
+      if (!profile.isActive || profile.deletedAt) {
+        await signOut(firebaseAuth);
+        throw new Error('მომხმარებლის ანგარიში დეაქტივირებულია. მიმართეთ ადმინისტრატორს.');
+      }
+
+      const now = new Date().toISOString();
+      profile = { ...profile, lastLoginAt: now, updatedAt: now };
+      await saveCloudDocument('users', profile.id, profile);
+      await withoutCloudCapture(async () => {
+        const duplicateIds = (await db.users.where('username').equals(normalized).toArray())
+          .filter((item) => item.id !== profile!.id)
+          .map((item) => item.id);
+        if (duplicateIds.length) await db.users.bulkDelete(duplicateIds);
+        await db.users.put(profile!);
+      });
+      const loginLogId = generateUuid();
+      await saveCloudDocument('activity_logs', loginLogId, {
+        id: loginLogId,
+        entityType: 'user',
+        entityId: profile.id,
+        action: 'login',
+        summary: `მომხმარებელი ${profile.username} შევიდა სისტემაში (Firebase).`,
+        performedBy: profile.id,
+        performedByName: profile.fullName,
+        performedAt: now,
+      });
+      await prepareCloudWorkspace();
+      return toSafeUser(profile);
+    } catch (error) {
+      if (error instanceof Error) throw error;
+      throw new Error(authErrorMessage(error));
+    }
+  }
+
+  async logout(): Promise<void> {
+    await signOut(firebaseAuth);
+  }
+
   async getCurrentUser(): Promise<SafeUser | null> {
-    return null;
+    await firebaseAuth.authStateReady();
+    const authUser = firebaseAuth.currentUser;
+    if (!authUser) return null;
+    const snapshot = await getDoc(doc(firestore, 'users', authUser.uid));
+    if (!snapshot.exists()) {
+      await signOut(firebaseAuth);
+      return null;
+    }
+    const profile = snapshot.data() as User;
+    if (!profile.isActive || profile.deletedAt) {
+      await signOut(firebaseAuth);
+      return null;
+    }
+    await withoutCloudCapture(() => db.users.put(profile));
+    await prepareCloudWorkspace();
+    return toSafeUser(profile);
   }
-  async changeOwnPassword(): Promise<void> {
-    throw new Error('Firebase Auth ჯერ არ არის კონფიგურირებული.');
+
+  async changeOwnPassword(userId: string, currentPassword: string, newPassword: string): Promise<void> {
+    if (newPassword.trim().length < 6) throw new Error('ახალი პაროლი უნდა შეიცავდეს მინიმუმ 6 სიმბოლოს.');
+    const authUser = firebaseAuth.currentUser;
+    if (!authUser || authUser.uid !== userId || !authUser.email) throw new Error('აქტიური სესია ვერ მოიძებნა.');
+    try {
+      await reauthenticateWithCredential(authUser, EmailAuthProvider.credential(authUser.email, currentPassword));
+      await updatePassword(authUser, newPassword);
+      const profile = await db.users.get(userId);
+      if (profile) {
+        const updated = { ...profile, mustChangePassword: false, updatedAt: new Date().toISOString(), updatedBy: userId };
+        await saveCloudDocument('users', userId, updated);
+        await withoutCloudCapture(() => db.users.put(updated));
+      }
+    } catch (error) {
+      throw new Error(authErrorMessage(error));
+    }
   }
+
   async setUserPasswordAdmin(): Promise<void> {
-    throw new Error('Firebase Auth ჯერ არ არის კონფიგურირებული.');
+    throw new Error('სხვა მომხმარებლის პაროლის შეცვლა უსაფრთხოების გამო Firebase Console-იდან უნდა შესრულდეს.');
   }
+
   async createLocalPasswordRecord(): Promise<{ passwordHash: string; passwordSalt: string }> {
-    throw new Error('Firebase Auth ჯერ არ არის კონფიგურირებული.');
+    return { passwordHash: '', passwordSalt: '' };
+  }
+
+  async createUserAccount(username: string, password: string): Promise<{ id: string; passwordHash: string; passwordSalt: string }> {
+    const secondaryName = 'medreg-user-provisioning';
+    const existing = getApps().find((item) => item.name === secondaryName);
+    const secondaryApp = existing || initializeApp(firebaseConfig, secondaryName);
+    const secondaryAuth = getAuth(secondaryApp);
+    try {
+      const credential = await createUserWithEmailAndPassword(secondaryAuth, usernameToEmail(username), password);
+      await signOut(secondaryAuth);
+      return { id: credential.user.uid, passwordHash: '', passwordSalt: '' };
+    } catch (error) {
+      throw new Error(authErrorMessage(error));
+    } finally {
+      if (!existing) await deleteApp(secondaryApp);
+    }
   }
 }
 
-export const authService: IAuthAdapter = new LocalAuthAdapter();
+export const authService: IAuthAdapter = new FirebaseAuthAdapter();

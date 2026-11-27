@@ -291,7 +291,7 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
           <div className="p-3 border-t border-slate-200 bg-slate-50/70 text-[11px] text-slate-500 leading-snug">
             <div className="flex items-center gap-1.5 font-medium text-slate-700">
               <ShieldCheck className="w-3.5 h-3.5 text-teal-700 shrink-0" />
-              <span>ლოკალური IndexedDB რეჟიმი</span>
+              <span>Firebase · Live Sync</span>
             </div>
             <p className="mt-1">არ არის ოფიციალური eMOH / სააგენტოს სისტემა.</p>
           </div>

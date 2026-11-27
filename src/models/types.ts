@@ -36,8 +36,8 @@ export interface AuditBase {
 
 export interface User extends AuditBase {
   username: string;
-  passwordHash: string; // PBKDF2/SHA-256 salted hash in local MVP; replaced by Firebase Auth later
-  passwordSalt: string;
+  passwordHash: string; // Legacy backup compatibility only; Firebase profiles store an empty value.
+  passwordSalt: string; // Passwords and hashes are managed exclusively by Firebase Auth.
   fullName: string;
   position: string;
   department: string;

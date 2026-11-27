@@ -3,6 +3,7 @@ import { authService } from '../auth/AuthService';
 import { dataRepo, WorkspaceSnapshot } from '../repositories/DataRepository';
 import { PermissionAction, SafeUser } from '../models/types';
 import { CaseFilterCriteria, hasPermission } from '../utils/caseLogic';
+import { startLiveSync } from '../firebase/cloudSync';
 
 export type NavPageId =
   | 'dashboard'
@@ -140,6 +141,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       mounted = false;
     };
   }, [refreshData]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    let lastErrorAt = 0;
+    return startLiveSync(
+      () => void refreshData(),
+      (error) => {
+        console.error('Firebase live sync failed', error);
+        const now = Date.now();
+        if (now - lastErrorAt > 5000) {
+          lastErrorAt = now;
+          notify(`Firebase სინქრონიზაციის შეცდომა: ${error.message}`, 'error');
+        }
+      }
+    );
+  }, [currentUser, notify, refreshData]);
 
   const navigate = useCallback(
     (

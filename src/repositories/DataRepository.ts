@@ -2,6 +2,9 @@ import JSZip from 'jszip';
 import { db } from '../storage/db';
 import { storageProvider } from '../storage/StorageProvider';
 import { authService } from '../auth/AuthService';
+import { flushCloudWrites } from '../firebase/cloudSync';
+import { doc, runTransaction } from 'firebase/firestore';
+import { firestore } from '../firebase/client';
 import { DEFAULT_SYSTEM_SETTINGS } from '../settings/defaultSettings';
 import {
   ActivityLogEntry,
@@ -42,7 +45,6 @@ import {
   findMatchingOrganization,
   formatCaseNumber,
   generateUuid,
-  getNextSequenceForYear,
   getTbilisiDateISO,
 } from '../utils/caseLogic';
 
@@ -184,20 +186,20 @@ export class DexieRepository {
   async allocateNextCaseNumber(year?: number): Promise<{ caseNumber: string; sequenceYear: number; sequenceNumber: number }> {
     const targetYear = year || Number(getTbilisiDateISO().slice(0, 4));
     const settings = await this.ensureSettings();
-
-    return db.transaction('rw', [db.counters, db.cases], async () => {
-      const counter = await db.counters.get(targetYear);
-      const casesInYear = await db.cases.where('sequenceYear').equals(targetYear).toArray();
-      const nextSeq = getNextSequenceForYear(counter?.lastSequence || 0, casesInYear);
-      await db.counters.put({ year: targetYear, lastSequence: nextSeq });
-      const caseNumber = formatCaseNumber(
-        settings.caseNumberPrefix,
-        settings.caseNumberYearFormat,
-        targetYear,
-        nextSeq
-      );
-      return { caseNumber, sequenceYear: targetYear, sequenceNumber: nextSeq };
+    const counterRef = doc(firestore, 'counters', String(targetYear));
+    const nextSeq = await runTransaction(firestore, async (transaction) => {
+      const remoteCounter = await transaction.get(counterRef);
+      const current = remoteCounter.exists() ? Number(remoteCounter.data().lastSequence || 0) : 0;
+      const next = current + 1;
+      transaction.set(counterRef, { year: targetYear, lastSequence: next });
+      return next;
     });
+    await db.counters.put({ year: targetYear, lastSequence: nextSeq });
+    return {
+      caseNumber: formatCaseNumber(settings.caseNumberPrefix, settings.caseNumberYearFormat, targetYear, nextSeq),
+      sequenceYear: targetYear,
+      sequenceNumber: nextSeq,
+    };
   }
 
   async createOrPublishCase(params: {
@@ -1339,20 +1341,25 @@ export class DexieRepository {
       tables[name] = await db.table(name).toArray();
     }
 
-    const blobs = await db.file_blobs.toArray();
     const filesFolder = zip.folder('files');
     const filesManifest: BackupPayload['filesManifest'] = [];
-
-    for (const b of blobs) {
-      filesManifest.push({
-        blobKey: b.blobKey,
-        fileName: b.fileName,
-        mimeType: b.mimeType,
-        sizeBytes: b.sizeBytes,
-      });
-      if (filesFolder) {
-        filesFolder.file(b.blobKey, b.data);
+    const cloudFiles = new Map<string, { blobKey: string; fileName: string; mimeType: string; sizeBytes: number }>();
+    for (const attachment of await db.attachments.toArray()) {
+      for (const version of attachment.versions || []) {
+        cloudFiles.set(version.blobKey, {
+          blobKey: version.blobKey,
+          fileName: version.fileName,
+          mimeType: version.mimeType,
+          sizeBytes: version.sizeBytes,
+        });
       }
+    }
+
+    for (const meta of cloudFiles.values()) {
+      const blob = await storageProvider.getFileBlob(meta.blobKey);
+      if (!blob) continue;
+      filesManifest.push(meta);
+      if (filesFolder) filesFolder.file(meta.blobKey, blob);
     }
 
     const payload: BackupPayload = {
@@ -1370,7 +1377,7 @@ export class DexieRepository {
       entityType: 'backup',
       entityId: 'export',
       action: 'backup',
-      summary: `შეიქმნა სრული ZIP სარეზერვო ასლი (${blobs.length} ფაილით).`,
+      summary: `შეიქმნა სრული ZIP სარეზერვო ასლი (${filesManifest.length} ფაილით).`,
       performedBy: user.id,
       performedByName: user.fullName,
     });
@@ -1763,4 +1770,23 @@ export class DexieRepository {
   }
 }
 
-export const dataRepo = new DexieRepository();
+const dexieRepository = new DexieRepository();
+const READ_ONLY_METHODS = new Set(['loadAll', 'inspectBackupFile']);
+
+/**
+ * Dexie remains the fast offline cache. Every completed mutation is durably
+ * flushed to Firestore before the UI is told that the operation succeeded.
+ */
+export const dataRepo: DexieRepository = new Proxy(dexieRepository, {
+  get(target, property, receiver) {
+    const value = Reflect.get(target, property, receiver);
+    if (typeof value !== 'function') return value;
+    const methodName = String(property);
+    if (READ_ONLY_METHODS.has(methodName)) return value.bind(target);
+    return async (...args: unknown[]) => {
+      const result = await value.apply(target, args);
+      await flushCloudWrites();
+      return result;
+    };
+  },
+});

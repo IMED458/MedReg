@@ -372,32 +372,36 @@ export const UsersManagementPage: React.FC = () => {
       notify('ეს მომხმარებლის სახელი უკვე დაკავებულია.', 'error');
       return;
     }
-    const { passwordHash, passwordSalt } = await authService.createLocalPasswordRecord(password);
-    const now = new Date().toISOString();
-    const newUser: User = {
-      id: generateUuid(),
-      username: cleanUser,
-      passwordHash,
-      passwordSalt,
-      fullName: fullName.trim(),
-      position: position.trim() || 'ინსპექტორი',
-      department: department.trim() || 'კონტროლის დეპარტამენტი',
-      phone: phone.trim(),
-      role,
-      isActive: true,
-      mustChangePassword: false,
-      createdAt: now,
-      updatedAt: now,
-      createdBy: currentUser.id,
-      updatedBy: currentUser.id,
-    };
-    await dataRepo.saveUser(newUser, currentUser, `შეიქმნა თანამშრომელი ${newUser.username} (${newUser.role})`);
-    setUsername('');
-    setPassword('');
-    setFullName('');
-    setShowAdd(false);
-    await refreshData();
-    notify(`თანამშრომელი „${newUser.fullName}“ დაემატა.`, 'success');
+    try {
+      const { id, passwordHash, passwordSalt } = await authService.createUserAccount(cleanUser, password);
+      const now = new Date().toISOString();
+      const newUser: User = {
+        id,
+        username: cleanUser,
+        passwordHash,
+        passwordSalt,
+        fullName: fullName.trim(),
+        position: position.trim() || 'ინსპექტორი',
+        department: department.trim() || 'კონტროლის დეპარტამენტი',
+        phone: phone.trim(),
+        role,
+        isActive: true,
+        mustChangePassword: false,
+        createdAt: now,
+        updatedAt: now,
+        createdBy: currentUser.id,
+        updatedBy: currentUser.id,
+      };
+      await dataRepo.saveUser(newUser, currentUser, `შეიქმნა თანამშრომელი ${newUser.username} (${newUser.role})`);
+      setUsername('');
+      setPassword('');
+      setFullName('');
+      setShowAdd(false);
+      await refreshData();
+      notify(`თანამშრომელი „${newUser.fullName}“ დაემატა.`, 'success');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'მომხმარებლის შექმნა ვერ მოხერხდა.', 'error');
+    }
   };
 
   const handleRoleChange = async (u: User, newRole: RoleId) => {
@@ -456,11 +460,11 @@ export const UsersManagementPage: React.FC = () => {
         </button>
       </div>
 
-      <div className="rounded-lg border border-amber-200 bg-amber-50/70 px-4 py-2.5 text-xs text-amber-950 flex items-start gap-2">
-        <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" />
+      <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 px-4 py-2.5 text-xs text-emerald-950 flex items-start gap-2">
+        <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 text-emerald-700" />
         <span>
-          <strong>ლოკალური რეჟიმის შენიშვნა:</strong> ბრაუზერში შექმნილი მომხმარებლები მუშაობს ამ მოწყობილობის საცავში (MVP).
-          რეალური მრავალმომხმარებლიანი ავტორიზაცია და მოწყობილობებს შორის სინქრონიზაცია აქტიურდება მხოლოდ Firebase Auth-ის დაკავშირების შემდეგ.
+          <strong>Firebase Auth აქტიურია:</strong> აქ შექმნილი ანგარიში დაუყოვნებლივ ხელმისაწვდომი იქნება ყველა მოწყობილობაზე;
+          პროფილი და როლი Firestore-ში სინქრონდება.
         </span>
       </div>
 
@@ -1003,7 +1007,7 @@ export const SettingsPage: React.FC = () => {
               <h2 className="text-sm font-semibold text-slate-900">სრული სარეზერვო ექსპორტი და აღდგენა (JSON / ZIP)</h2>
             </div>
             <p className="text-xs text-slate-600">
-              ZIP არქივი შეიცავს ყველა ცხრილის ჩანაწერს და IndexedDB-ში შენახულ ფაილებს.
+              ZIP არქივი შეიცავს Firestore-ის ყველა ჩანაწერს და Firebase Storage-ში შენახულ ფაილებს.
             </p>
             <div className="flex flex-wrap gap-2.5">
               <button
@@ -1112,20 +1116,19 @@ export const SettingsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Storage & Future Firebase Status */}
+          {/* Firebase storage and synchronization status */}
           <div className="rounded-xl border border-slate-200 bg-white p-5 text-xs space-y-2">
             <h2 className="text-sm font-semibold text-slate-900">შენახვის სტატუსი და Firebase ინტეგრაციის მდგომარეობა</h2>
             <p>
-              <strong>აქტიური ბაზა:</strong> ლოკალური IndexedDB (Dexie) · ატვირთული ფაილები:{' '}
+              <strong>აქტიური ბაზა:</strong> Cloud Firestore · ატვირთული ფაილები:{' '}
               <strong>{storageInfo?.fileCount ?? 0}</strong> ({((storageInfo?.usedBytes ?? 0) / (1024 * 1024)).toFixed(2)} MB)
             </p>
             <p>
               <strong>Firebase Auth / Firestore / Cloud Storage:</strong>{' '}
-              <span className="text-amber-800 font-medium">არ არის დაკავშირებული (არქიტექტურული ინტერფეისები მზადაა)</span>
+              <span className="text-emerald-700 font-medium">დაკავშირებულია · Live Sync აქტიურია</span>
             </p>
             <p className="text-slate-500">
-              იხილეთ <code className="font-mono">docs/FIREBASE_MIGRATION.md</code>,{' '}
-              <code className="font-mono">docs/firestore.rules.template</code> და <code className="font-mono">.env.example</code>.
+              Dexie გამოიყენება მხოლოდ სწრაფი ოფლაინ cache-ისთვის; ცვლილებების source-of-truth არის Firebase.
             </p>
           </div>
         </div>
