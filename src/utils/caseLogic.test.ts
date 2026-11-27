@@ -221,6 +221,14 @@ test('permissions and PII masking enforce role boundaries', () => {
   assert.equal(maskPersonalId('01001012345', true, false), '01001012345');
 });
 
+test('admin remains an unconditional superuser even if the editable permission matrix is corrupted', () => {
+  const settings = structuredClone(DEFAULT_SYSTEM_SETTINGS);
+  settings.rolePermissions.admin.delete = false;
+  settings.rolePermissions.admin.manage_settings = false;
+  assert.equal(hasPermission('admin', 'delete', settings), true);
+  assert.equal(hasPermission('admin', 'manage_settings', settings), true);
+});
+
 test('case filtering matches applicant, patient, clinic, and case number', () => {
   const c1 = makeCase({ id: 'c1', caseNumber: 'CASE-2026-000010', primaryOrganizationId: 'org-1' });
   const c2 = makeCase({ id: 'c2', caseNumber: 'CASE-2026-000011', primaryOrganizationId: 'org-2' });
@@ -296,4 +304,3 @@ test('inline directory matching reuses existing clinic by taxId or name and doct
   assert.equal(findMatchingDoctor(docs, ' გიორგი  ვაშაძე ')?.id, 'doc-1');
   assert.equal(findMatchingDoctor(docs, 'ნინო ბერიძე'), undefined);
 });
-

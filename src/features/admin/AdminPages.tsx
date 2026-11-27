@@ -11,7 +11,11 @@ import {
   UserPlus,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { dataRepo } from '../../repositories/DataRepository';
+import {
+  dataRepo,
+  EDITABLE_COLLECTIONS,
+  type EditableCollection,
+} from '../../repositories/DataRepository';
 import { authService } from '../../auth/AuthService';
 import { storageProvider } from '../../storage/StorageProvider';
 import {
@@ -606,7 +610,7 @@ export const UsersManagementPage: React.FC = () => {
 
 export const SettingsPage: React.FC = () => {
   const { currentUser, snapshot, refreshData, notify, can, confirmAction } = useApp();
-  const [activeTab, setActiveTab] = useState<'profile' | 'dictionaries' | 'custom_fields' | 'numbering' | 'backup'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'dictionaries' | 'custom_fields' | 'numbering' | 'data_editor' | 'backup'>('profile');
 
   // Password change
   const [curPass, setCurPass] = useState('');
@@ -637,9 +641,38 @@ export const SettingsPage: React.FC = () => {
   } | null>(null);
   const [storageInfo, setStorageInfo] = useState<{ usedBytes: number; quotaBytes: number; fileCount: number } | null>(null);
 
+  // Universal database editor
+  const [rawCollection, setRawCollection] = useState<EditableCollection>('cases');
+  const [rawRecords, setRawRecords] = useState<Record<string, unknown>[]>([]);
+  const [rawOriginalKey, setRawOriginalKey] = useState<string | number | undefined>();
+  const [rawJson, setRawJson] = useState('');
+  const [rawLoading, setRawLoading] = useState(false);
+  const [rawError, setRawError] = useState('');
+
   useEffect(() => {
     void storageProvider.getStorageUsageEstimate().then(setStorageInfo);
   }, [snapshot]);
+
+  useEffect(() => {
+    if (activeTab !== 'data_editor' || !currentUser || currentUser.role !== 'admin') return;
+    let cancelled = false;
+    setRawLoading(true);
+    setRawError('');
+    void dataRepo
+      .listRawRecords(rawCollection, currentUser)
+      .then((records) => {
+        if (!cancelled) setRawRecords(records);
+      })
+      .catch((error) => {
+        if (!cancelled) setRawError(error instanceof Error ? error.message : 'მონაცემების წაკითხვა ვერ მოხერხდა.');
+      })
+      .finally(() => {
+        if (!cancelled) setRawLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, currentUser, rawCollection]);
 
   if (!snapshot || !currentUser) return null;
   const isAdmin = can('manage_settings');
@@ -763,6 +796,77 @@ export const SettingsPage: React.FC = () => {
 
   const sampleCasesCount = snapshot.cases.filter((c) => c.isTestSample).length;
 
+  const rawKeyOf = (record: Record<string, unknown>): string | number =>
+    rawCollection === 'counters' ? Number(record.year) : String(record.id || '');
+
+  const reloadRawRecords = async () => {
+    const records = await dataRepo.listRawRecords(rawCollection, currentUser);
+    setRawRecords(records);
+    return records;
+  };
+
+  const selectRawRecord = (record: Record<string, unknown>) => {
+    setRawOriginalKey(rawKeyOf(record));
+    setRawJson(JSON.stringify(record, null, 2));
+    setRawError('');
+  };
+
+  const startNewRawRecord = () => {
+    const starter = rawCollection === 'counters'
+      ? { year: new Date().getFullYear(), lastSequence: 0 }
+      : { id: rawCollection === 'settings' ? 'singleton' : generateUuid() };
+    setRawOriginalKey(undefined);
+    setRawJson(JSON.stringify(starter, null, 2));
+    setRawError('');
+  };
+
+  const saveRawRecord = async () => {
+    try {
+      const parsed = JSON.parse(rawJson) as unknown;
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+        throw new Error('ჩანაწერი უნდა იყოს JSON ობიექტი.');
+      }
+      const key = await dataRepo.saveRawRecord({
+        tableName: rawCollection,
+        originalKey: rawOriginalKey,
+        record: parsed as Record<string, unknown>,
+        user: currentUser,
+      });
+      await refreshData();
+      const records = await reloadRawRecords();
+      const saved = records.find((record) => String(rawKeyOf(record)) === String(key));
+      if (saved) selectRawRecord(saved);
+      notify('ჩანაწერის ყველა ველი შენახულია და Firebase-ში სინქრონიზებულია.', 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'ჩანაწერის შენახვა ვერ მოხერხდა.';
+      setRawError(message);
+      notify(message, 'error');
+    }
+  };
+
+  const deleteSelectedRawRecord = async () => {
+    if (rawOriginalKey === undefined) return;
+    const ok = await confirmAction({
+      title: 'ჩანაწერის სრულად წაშლა',
+      message: `${rawCollection}/${String(rawOriginalKey)} სრულად წაიშლება Firebase-დან და ყველა სინქრონიზებული მოწყობილობიდან.`,
+      confirmLabel: 'სრულად წაშლა',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await dataRepo.deleteRawRecord({ tableName: rawCollection, key: rawOriginalKey, user: currentUser });
+      setRawOriginalKey(undefined);
+      setRawJson('');
+      await refreshData();
+      await reloadRawRecords();
+      notify('ჩანაწერი სრულად წაიშალა.', 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'ჩანაწერის წაშლა ვერ მოხერხდა.';
+      setRawError(message);
+      notify(message, 'error');
+    }
+  };
+
   return (
     <div className="space-y-5">
       <div>
@@ -780,6 +884,7 @@ export const SettingsPage: React.FC = () => {
                 { id: 'dictionaries', label: 'სტატუსები და ტიპები' },
                 { id: 'custom_fields', label: 'მორგებული ველები (Custom Fields)' },
                 { id: 'numbering', label: 'ნუმერაცია და ისტორია' },
+                { id: 'data_editor', label: 'ყველა მონაცემის რედაქტორი' },
                 { id: 'backup', label: 'ბექაფი, საცავი და Firebase' },
               ]
             : []),
@@ -993,6 +1098,105 @@ export const SettingsPage: React.FC = () => {
                     <span className="text-slate-500 tabular-nums">{formatGeorgianDateTime(l.performedAt)}</span>
                   </div>
                 ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'data_editor' && isAdmin && (
+        <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
+          <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+            <p>
+              <strong>სრული ადმინისტრაციული წვდომა:</strong> აქ შეგიძლია ყველა შენახული ველის, ტექსტის,
+              პარამეტრისა და ჩანაწერის პირდაპირი JSON-რედაქტირება ან სამუდამოდ წაშლა. ცვლილება მყისიერად
+              სინქრონიზდება Firebase-თან.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-xs font-medium text-slate-700" htmlFor="raw-collection">მონაცემთა კოლექცია</label>
+            <select
+              id="raw-collection"
+              value={rawCollection}
+              onChange={(event) => {
+                setRawCollection(event.target.value as EditableCollection);
+                setRawOriginalKey(undefined);
+                setRawJson('');
+              }}
+              className="min-w-64 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-mono"
+            >
+              {EDITABLE_COLLECTIONS.map((collection) => (
+                <option key={collection} value={collection}>{collection}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={startNewRawRecord}
+              className="inline-flex items-center gap-1 rounded-lg bg-sky-800 px-3 py-2 text-xs font-medium text-white"
+            >
+              <Plus className="h-3.5 w-3.5" /> ახალი ჩანაწერი
+            </button>
+            <span className="text-xs text-slate-500">სულ: {rawRecords.length}</span>
+          </div>
+
+          {rawError && <p className="rounded-lg bg-rose-50 p-3 text-xs text-rose-800">{rawError}</p>}
+
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(240px,0.75fr)_minmax(0,2fr)]">
+            <div className="max-h-[560px] overflow-y-auto rounded-lg border border-slate-200">
+              {rawLoading ? (
+                <p className="p-4 text-xs text-slate-500">იტვირთება...</p>
+              ) : rawRecords.length === 0 ? (
+                <p className="p-4 text-xs text-slate-500">ამ კოლექციაში ჩანაწერი არ არის.</p>
+              ) : (
+                rawRecords.map((record) => {
+                  const key = rawKeyOf(record);
+                  const label = String(
+                    record.caseNumber || record.fullName || record.legalName || record.title || record.name || record.username || key
+                  );
+                  return (
+                    <button
+                      key={String(key)}
+                      type="button"
+                      onClick={() => selectRawRecord(record)}
+                      className={`block w-full border-b border-slate-100 px-3 py-2.5 text-left text-xs last:border-b-0 ${
+                        String(rawOriginalKey) === String(key) ? 'bg-sky-50 text-sky-950' : 'hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className="block truncate font-medium">{label}</span>
+                      <span className="block truncate font-mono text-[10px] text-slate-500">{String(key)}</span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="space-y-3">
+              <textarea
+                value={rawJson}
+                onChange={(event) => setRawJson(event.target.value)}
+                spellCheck={false}
+                placeholder="მარცხნიდან აირჩიე ჩანაწერი ან შექმენი ახალი..."
+                className="min-h-[480px] w-full resize-y rounded-lg border border-slate-300 bg-slate-950 p-4 font-mono text-xs leading-5 text-emerald-200 outline-none focus:border-sky-500"
+              />
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={!rawJson.trim()}
+                  onClick={() => void saveRawRecord()}
+                  className="rounded-lg bg-emerald-700 px-4 py-2 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  ყველა ცვლილების შენახვა
+                </button>
+                <button
+                  type="button"
+                  disabled={rawOriginalKey === undefined}
+                  onClick={() => void deleteSelectedRawRecord()}
+                  className="inline-flex items-center gap-1 rounded-lg bg-rose-700 px-4 py-2 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Trash2 className="h-3.5 w-3.5" /> სრულად წაშლა
+                </button>
+              </div>
             </div>
           </div>
         </div>

@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import { db } from '../storage/db';
 import { storageProvider } from '../storage/StorageProvider';
-import { flushCloudWrites } from '../firebase/cloudSync';
+import { CLOUD_TABLES, flushCloudWrites } from '../firebase/cloudSync';
 import { doc, runTransaction } from 'firebase/firestore';
 import { firestore } from '../firebase/client';
 import { DEFAULT_SYSTEM_SETTINGS } from '../settings/defaultSettings';
@@ -78,7 +78,88 @@ export interface WorkspaceSnapshot {
   caseLinks: CaseLink[];
 }
 
+export const EDITABLE_COLLECTIONS = [...CLOUD_TABLES] as const;
+export type EditableCollection = (typeof EDITABLE_COLLECTIONS)[number];
+
+function assertAdmin(user: SafeUser): void {
+  if (user.role !== 'admin') throw new Error('ამ მოქმედებისთვის ადმინისტრატორის უფლებაა საჭირო.');
+}
+
+function primaryKeyFor(tableName: EditableCollection, record: Record<string, unknown>): string | number {
+  if (tableName === 'counters') {
+    const year = Number(record.year);
+    if (!Number.isInteger(year)) throw new Error('counters ჩანაწერს სჭირდება მთელი რიცხვი — year.');
+    return year;
+  }
+  const id = String(record.id || '').trim();
+  if (!id) throw new Error(`${tableName} ჩანაწერს სჭირდება id.`);
+  return id;
+}
+
 export class DexieRepository {
+  async listRawRecords(tableName: EditableCollection, user: SafeUser): Promise<Record<string, unknown>[]> {
+    assertAdmin(user);
+    if (!EDITABLE_COLLECTIONS.includes(tableName)) throw new Error('უცნობი მონაცემთა კოლექცია.');
+    return db.table(tableName).toArray() as Promise<Record<string, unknown>[]>;
+  }
+
+  async saveRawRecord(params: {
+    tableName: EditableCollection;
+    originalKey?: string | number;
+    record: Record<string, unknown>;
+    user: SafeUser;
+  }): Promise<string | number> {
+    assertAdmin(params.user);
+    if (!EDITABLE_COLLECTIONS.includes(params.tableName)) throw new Error('უცნობი მონაცემთა კოლექცია.');
+    const table = db.table(params.tableName);
+    const nextKey = primaryKeyFor(params.tableName, params.record);
+    await table.put(params.record);
+    if (params.originalKey !== undefined && String(params.originalKey) !== String(nextKey)) {
+      await table.delete(params.tableName === 'counters' ? Number(params.originalKey) : params.originalKey);
+    }
+    if (params.tableName !== 'activity_logs') {
+      await this.logActivity({
+        entityType: 'settings',
+        entityId: `${params.tableName}/${String(nextKey)}`,
+        action: 'settings_change',
+        summary: `უნივერსალური რედაქტორით განახლდა ${params.tableName}/${String(nextKey)}.`,
+        performedBy: params.user.id,
+        performedByName: params.user.fullName,
+      });
+    }
+    return nextKey;
+  }
+
+  async deleteRawRecord(params: {
+    tableName: EditableCollection;
+    key: string | number;
+    user: SafeUser;
+  }): Promise<void> {
+    assertAdmin(params.user);
+    if (!EDITABLE_COLLECTIONS.includes(params.tableName)) throw new Error('უცნობი მონაცემთა კოლექცია.');
+    if (params.tableName === 'attachments') {
+      const attachment = await db.attachments.get(String(params.key));
+      const blobKeys = new Set<string>();
+      if (attachment?.blobKey) blobKeys.add(attachment.blobKey);
+      for (const version of attachment?.versions || []) {
+        if (version.blobKey) blobKeys.add(version.blobKey);
+      }
+      for (const blobKey of blobKeys) await storageProvider.deleteFile(blobKey);
+    }
+    const key = params.tableName === 'counters' ? Number(params.key) : params.key;
+    await db.table(params.tableName).delete(key);
+    if (params.tableName !== 'activity_logs') {
+      await this.logActivity({
+        entityType: 'settings',
+        entityId: `${params.tableName}/${String(params.key)}`,
+        action: 'delete',
+        summary: `უნივერსალური რედაქტორით წაიშალა ${params.tableName}/${String(params.key)}.`,
+        performedBy: params.user.id,
+        performedByName: params.user.fullName,
+      });
+    }
+  }
+
   async ensureSettings(): Promise<SystemSettings> {
     const existing = await db.settings.get('singleton');
     if (existing) return existing;
@@ -1779,7 +1860,7 @@ export class DexieRepository {
 }
 
 const dexieRepository = new DexieRepository();
-const READ_ONLY_METHODS = new Set(['loadAll', 'inspectBackupFile']);
+const READ_ONLY_METHODS = new Set(['loadAll', 'inspectBackupFile', 'listRawRecords']);
 
 /**
  * Dexie remains the fast offline cache. Every completed mutation is durably

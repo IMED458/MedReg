@@ -615,6 +615,9 @@ export function hasPermission(
   settings: SystemSettings
 ): boolean {
   if (!role) return false;
+  // The system owner must never lose access because of an accidentally edited
+  // permission matrix. Admin is an unconditional superuser.
+  if (role === 'admin') return true;
   const matrix = settings.rolePermissions[role];
   if (!matrix) return false;
   return Boolean(matrix[action]);
@@ -790,4 +793,3 @@ export function findMatchingDoctor(
   if (!normName) return undefined;
   return doctors.find((d) => !d.deletedAt && normalizeEntityText(d.fullName) === normName);
 }
-
