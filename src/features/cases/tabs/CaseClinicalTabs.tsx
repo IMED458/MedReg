@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Building2, CheckSquare, Plus, Stethoscope, Users } from 'lucide-react';
+import { Building2, Plus, Stethoscope, Trash2, Users } from 'lucide-react';
 import { useApp } from '../../../context/AppContext';
 import { dataRepo } from '../../../repositories/DataRepository';
 import {
@@ -18,8 +18,11 @@ import {
   AttachmentList,
   FieldCommentButton,
   FileUploader,
+  PendingFilePicker,
+  PendingUploadItem,
   SearchableSelect,
   StatusLabel,
+  uploadAttachmentBatch,
 } from '../../../components/ui/CommonUI';
 
 const VISIT_STATUS_LABELS: Record<VisitStatus, string> = {
@@ -485,7 +488,8 @@ export const CaseParticipantsTab: React.FC<{ medicalCase: MedicalCase }> = ({ me
 };
 
 export const CaseClinicsDoctorsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medicalCase }) => {
-  const { snapshot, currentUser, refreshData, notify, can } = useApp();
+  const { snapshot, currentUser, refreshData, notify, can, confirmAction } = useApp();
+  const [orgMode, setOrgMode] = useState<'existing' | 'new'>('existing');
   const [selectedOrgId, setSelectedOrgId] = useState('');
   const [branchName, setBranchName] = useState('');
   const [contactName, setContactName] = useState('');
@@ -493,9 +497,24 @@ export const CaseClinicsDoctorsTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
   const [contactPhone, setContactPhone] = useState('');
   const [orgNextAction, setOrgNextAction] = useState('');
 
+  const [newOrgName, setNewOrgName] = useState('');
+  const [newOrgTaxId, setNewOrgTaxId] = useState('');
+  const [newOrgMunicipality, setNewOrgMunicipality] = useState('თბილისი');
+  const [newOrgAddress, setNewOrgAddress] = useState('');
+  const [newOrgBranch, setNewOrgBranch] = useState('');
+  const [newOrgDirector, setNewOrgDirector] = useState('');
+  const [newOrgPhone, setNewOrgPhone] = useState('');
+
+  const [docMode, setDocMode] = useState<'existing' | 'new'>('existing');
   const [selectedDocId, setSelectedDocId] = useState('');
   const [docRole, setDocRole] = useState<CaseDoctorRole>('attending_physician');
   const [docNextAction, setDocNextAction] = useState('');
+
+  const [newDocName, setNewDocName] = useState('');
+  const [newDocSpecialty, setNewDocSpecialty] = useState('');
+  const [newDocPosition, setNewDocPosition] = useState('');
+  const [newDocPhone, setNewDocPhone] = useState('');
+  const [newDocOrgId, setNewDocOrgId] = useState(medicalCase.primaryOrganizationId || '');
 
   if (!snapshot || !currentUser) return null;
   const editable = can('edit');
@@ -516,59 +535,128 @@ export const CaseClinicsDoctorsTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
 
   const handleLinkOrg = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedOrgId) return;
-    const org = snapshot.organizations.find((o) => o.id === selectedOrgId);
-    const now = new Date().toISOString();
-    await dataRepo.linkOrganizationToCase(
-      {
-        id: generateUuid(),
+    if (orgMode === 'existing') {
+      if (!selectedOrgId) return;
+      const org = snapshot.organizations.find((o) => o.id === selectedOrgId);
+      const now = new Date().toISOString();
+      await dataRepo.linkOrganizationToCase(
+        {
+          id: generateUuid(),
+          caseId: medicalCase.id,
+          organizationId: selectedOrgId,
+          branchName: branchName || undefined,
+          snapshotAddress: org?.address,
+          responsibleContactName: contactName.trim() || undefined,
+          responsibleContactPosition: contactPos.trim() || undefined,
+          responsibleContactPhone: contactPhone.trim() || undefined,
+          nextAction: orgNextAction.trim() || undefined,
+          createdAt: now,
+          updatedAt: now,
+          createdBy: currentUser.id,
+          updatedBy: currentUser.id,
+        },
+        currentUser
+      );
+      setSelectedOrgId('');
+      setOrgNextAction('');
+      await refreshData();
+      notify('კლინიკა დაუკავშირდა ქეისს.', 'success');
+    } else {
+      if (!newOrgName.trim()) {
+        notify('მიუთითეთ კლინიკის დასახელება.', 'warning');
+        return;
+      }
+      const res = await dataRepo.createAndLinkOrganization({
         caseId: medicalCase.id,
-        organizationId: selectedOrgId,
-        branchName: branchName || undefined,
-        snapshotAddress: org?.address,
-        responsibleContactName: contactName.trim() || undefined,
-        responsibleContactPosition: contactPos.trim() || undefined,
-        responsibleContactPhone: contactPhone.trim() || undefined,
-        nextAction: orgNextAction.trim() || undefined,
-        createdAt: now,
-        updatedAt: now,
-        createdBy: currentUser.id,
-        updatedBy: currentUser.id,
-      },
-      currentUser
-    );
-    setSelectedOrgId('');
-    setOrgNextAction('');
-    await refreshData();
-    notify('კლინიკა დაუკავშირდა ქეისს.', 'success');
+        orgData: {
+          legalName: newOrgName.trim(),
+          taxId: newOrgTaxId.trim() || undefined,
+          municipality: newOrgMunicipality.trim() || 'თბილისი',
+          address: newOrgAddress.trim() || undefined,
+          branchName: newOrgBranch.trim() || undefined,
+          directorName: newOrgDirector.trim() || undefined,
+          phone: newOrgPhone.trim() || undefined,
+          nextAction: orgNextAction.trim() || undefined,
+        },
+        user: currentUser,
+      });
+      setNewOrgName('');
+      setNewOrgTaxId('');
+      setNewOrgAddress('');
+      setNewOrgBranch('');
+      setNewOrgDirector('');
+      setNewOrgPhone('');
+      setOrgNextAction('');
+      setOrgMode('existing');
+      await refreshData();
+      notify(
+        res.createdNew
+          ? `კლინიკა „${res.org.legalName}“ შეინახა ცნობარში და დაუკავშირდა ქეისს.`
+          : `კლინიკა „${res.org.legalName}“ დაუკავშირდა ქეისს.`,
+        'success'
+      );
+    }
   };
 
   const handleLinkDoc = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedDocId) return;
-    const doc = snapshot.doctors.find((d) => d.id === selectedDocId);
-    const now = new Date().toISOString();
-    await dataRepo.linkDoctorToCase(
-      {
-        id: generateUuid(),
+    if (docMode === 'existing') {
+      if (!selectedDocId) return;
+      const doc = snapshot.doctors.find((d) => d.id === selectedDocId);
+      const now = new Date().toISOString();
+      await dataRepo.linkDoctorToCase(
+        {
+          id: generateUuid(),
+          caseId: medicalCase.id,
+          doctorId: selectedDocId,
+          organizationId: doc?.organizationIds[0],
+          roleInCase: docRole,
+          snapshotPhone: doc?.phone,
+          snapshotEmail: doc?.email,
+          nextAction: docNextAction.trim() || undefined,
+          createdAt: now,
+          updatedAt: now,
+          createdBy: currentUser.id,
+          updatedBy: currentUser.id,
+        },
+        currentUser
+      );
+      setSelectedDocId('');
+      setDocNextAction('');
+      await refreshData();
+      notify('ექიმი დაუკავშირდა ქეისს.', 'success');
+    } else {
+      if (!newDocName.trim()) {
+        notify('მიუთითეთ ექიმის სახელი და გვარი.', 'warning');
+        return;
+      }
+      const res = await dataRepo.createAndLinkDoctor({
         caseId: medicalCase.id,
-        doctorId: selectedDocId,
-        organizationId: doc?.organizationIds[0],
-        roleInCase: docRole,
-        snapshotPhone: doc?.phone,
-        snapshotEmail: doc?.email,
-        nextAction: docNextAction.trim() || undefined,
-        createdAt: now,
-        updatedAt: now,
-        createdBy: currentUser.id,
-        updatedBy: currentUser.id,
-      },
-      currentUser
-    );
-    setSelectedDocId('');
-    setDocNextAction('');
-    await refreshData();
-    notify('ექიმი დაუკავშირდა ქეისს.', 'success');
+        doctorData: {
+          fullName: newDocName.trim(),
+          specialty: newDocSpecialty.trim() || undefined,
+          position: newDocPosition.trim() || undefined,
+          phone: newDocPhone.trim() || undefined,
+          organizationId: newDocOrgId || medicalCase.primaryOrganizationId || linkedOrgs[0]?.organizationId,
+          roleInCase: docRole,
+          nextAction: docNextAction.trim() || undefined,
+        },
+        user: currentUser,
+      });
+      setNewDocName('');
+      setNewDocSpecialty('');
+      setNewDocPosition('');
+      setNewDocPhone('');
+      setDocNextAction('');
+      setDocMode('existing');
+      await refreshData();
+      notify(
+        res.createdNew
+          ? `ექიმი „${res.doctor.fullName}“ შეინახა ცნობარში და დაუკავშირდა ქეისს.`
+          : `ექიმი „${res.doctor.fullName}“ დაუკავშირდა ქეისს.`,
+        'success'
+      );
+    }
   };
 
   const DOC_ROLE_LABELS: Record<CaseDoctorRole, string> = {
@@ -583,9 +671,33 @@ export const CaseClinicsDoctorsTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
     <div className="space-y-5">
       {/* Clinics */}
       <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
-        <div className="flex items-center gap-2">
-          <Building2 className="w-4 h-4 text-sky-800" />
-          <h3 className="text-sm font-semibold text-slate-900">დაკავშირებული კლინიკები და პასუხისმგებელი პირები</h3>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Building2 className="w-4 h-4 text-sky-800" />
+            <h3 className="text-sm font-semibold text-slate-900">დაკავშირებული კლინიკები და პასუხისმგებელი პირები</h3>
+          </div>
+          {editable && (
+            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setOrgMode('existing')}
+                className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                  orgMode === 'existing' ? 'bg-sky-900 text-white' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                ცნობარიდან არჩევა
+              </button>
+              <button
+                type="button"
+                onClick={() => setOrgMode('new')}
+                className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                  orgMode === 'new' ? 'bg-sky-900 text-white' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                + ახალი კლინიკა
+              </button>
+            </div>
+          )}
         </div>
 
         {linkedOrgs.length === 0 ? (
@@ -598,7 +710,30 @@ export const CaseClinicsDoctorsTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
                 <div key={link.id} className="rounded-lg border border-slate-200 p-3 text-xs space-y-1">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <strong className="text-sm text-slate-900">{org?.legalName || 'კლინიკა'}</strong>
-                    <span className="text-slate-500">ს/კ {org?.taxId || '—'} · ფილიალი: {link.branchName || 'ძირითადი'}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-500">ს/კ {org?.taxId || '—'} · ფილიალი: {link.branchName || 'ძირითადი'}</span>
+                      {editable && can('delete') && (
+                        <button
+                          type="button"
+                          aria-label={`კლინიკის მოხსნა: ${org?.legalName}`}
+                          onClick={async () => {
+                            const ok = await confirmAction({
+                              title: 'კლინიკის მოხსნა ქეისიდან',
+                              message: `გსურთ კლინიკის „${org?.legalName}“ ამ ქეისიდან მოხსნა? (ცნობარში კლინიკა შენარჩუნდება)`,
+                              confirmLabel: 'მოხსნა',
+                              danger: true,
+                            });
+                            if (!ok) return;
+                            await dataRepo.softDeleteCaseOrganization(link.id, currentUser);
+                            await refreshData();
+                            notify('კლინიკა მოიხსნა ქეისიდან.', 'info');
+                          }}
+                          className="p-1 text-rose-700 hover:bg-rose-50 rounded"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <p className="text-slate-600">
                     დირექტორი: {org?.directorName || '—'} | ქეისზე პასუხისმგებელი: <strong>{link.responsibleContactName || '—'}</strong> ({link.responsibleContactPhone || '—'})
@@ -611,49 +746,122 @@ export const CaseClinicsDoctorsTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
         )}
 
         {editable && (
-          <form onSubmit={handleLinkOrg} className="pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <SearchableSelect
-              label="აირჩიეთ კლინიკა ცნობარიდან"
-              value={selectedOrgId}
-              onChange={handleSelectOrg}
-              options={snapshot.organizations
-                .filter((o) => !o.deletedAt)
-                .map((o) => ({ value: o.id, label: o.legalName, sublabel: o.municipality }))}
-            />
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">ფილიალი</label>
-              <input
-                type="text"
-                value={branchName}
-                onChange={(e) => setBranchName(e.target.value)}
-                placeholder="ფილიალის დასახელება"
-                className="w-full min-h-[40px] rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              />
-            </div>
-            <input
-              type="text"
-              placeholder="კლინიკის პასუხისმგებელი პირი ამ ქეისზე"
-              value={contactName}
-              onChange={(e) => setContactName(e.target.value)}
-              className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            />
-            <input
-              type="text"
-              placeholder="საკონტაქტო ტელეფონი"
-              value={contactPhone}
-              onChange={(e) => setContactPhone(e.target.value)}
-              className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            />
-            <input
-              type="text"
-              placeholder="შემდეგი მოქმედება კლინიკასთან"
-              value={orgNextAction}
-              onChange={(e) => setOrgNextAction(e.target.value)}
-              className="sm:col-span-2 rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            />
-            <div className="sm:col-span-2 flex justify-end">
-              <button type="submit" disabled={!selectedOrgId} className="px-4 py-2 text-xs font-medium text-white bg-sky-800 rounded-lg disabled:opacity-40">
-                + კლინიკის დაკავშირება
+          <form onSubmit={handleLinkOrg} className="pt-3 border-t border-slate-100 space-y-3">
+            {orgMode === 'existing' ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <SearchableSelect
+                  label="აირჩიეთ კლინიკა ცნობარიდან"
+                  value={selectedOrgId}
+                  onChange={handleSelectOrg}
+                  options={snapshot.organizations
+                    .filter((o) => !o.deletedAt)
+                    .map((o) => ({ value: o.id, label: o.legalName, sublabel: o.municipality }))}
+                />
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">ფილიალი</label>
+                  <input
+                    type="text"
+                    value={branchName}
+                    onChange={(e) => setBranchName(e.target.value)}
+                    placeholder="ფილიალის დასახელება"
+                    className="w-full min-h-[40px] rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </div>
+                <input
+                  type="text"
+                  placeholder="კლინიკის პასუხისმგებელი პირი ამ ქეისზე"
+                  value={contactName}
+                  onChange={(e) => setContactName(e.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                />
+                <input
+                  type="text"
+                  placeholder="საკონტაქტო ტელეფონი"
+                  value={contactPhone}
+                  onChange={(e) => setContactPhone(e.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                />
+                <input
+                  type="text"
+                  placeholder="შემდეგი მოქმედება კლინიკასთან"
+                  value={orgNextAction}
+                  onChange={(e) => setOrgNextAction(e.target.value)}
+                  className="sm:col-span-2 rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                />
+              </div>
+            ) : (
+              <div className="rounded-lg border border-sky-200 bg-sky-50/40 p-3.5 space-y-2.5">
+                <p className="text-[11px] text-sky-900">
+                  ახალი კლინიკა ავტომატურად შეინახება ცნობარში და მაშინვე დაუკავშირდება ამ ქეისს.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                  <input
+                    type="text"
+                    required
+                    placeholder="კლინიკის დასახელება *"
+                    value={newOrgName}
+                    onChange={(e) => setNewOrgName(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                  <input
+                    type="text"
+                    placeholder="საიდენტიფიკაციო კოდი (ს/კ)"
+                    value={newOrgTaxId}
+                    onChange={(e) => setNewOrgTaxId(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-mono"
+                  />
+                  <input
+                    type="text"
+                    placeholder="მუნიციპალიტეტი / ქალაქი"
+                    value={newOrgMunicipality}
+                    onChange={(e) => setNewOrgMunicipality(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                  <input
+                    type="text"
+                    placeholder="მისამართი"
+                    value={newOrgAddress}
+                    onChange={(e) => setNewOrgAddress(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                  <input
+                    type="text"
+                    placeholder="ფილიალი (არასავალდებულო)"
+                    value={newOrgBranch}
+                    onChange={(e) => setNewOrgBranch(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                  <input
+                    type="text"
+                    placeholder="დირექტორი / პასუხისმგებელი"
+                    value={newOrgDirector}
+                    onChange={(e) => setNewOrgDirector(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                  <input
+                    type="tel"
+                    placeholder="ტელეფონი"
+                    value={newOrgPhone}
+                    onChange={(e) => setNewOrgPhone(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                  <input
+                    type="text"
+                    placeholder="შემდეგი მოქმედება კლინიკასთან"
+                    value={orgNextAction}
+                    onChange={(e) => setOrgNextAction(e.target.value)}
+                    className="sm:col-span-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                </div>
+              </div>
+            )}
+            <div className="flex justify-end">
+              <button
+                type="submit"
+                disabled={orgMode === 'existing' ? !selectedOrgId : !newOrgName.trim()}
+                className="px-4 py-2 text-xs font-medium text-white bg-sky-800 rounded-lg disabled:opacity-40"
+              >
+                {orgMode === 'existing' ? '+ კლინიკის დაკავშირება' : '+ კლინიკის შექმნა და მიბმა'}
               </button>
             </div>
           </form>
@@ -662,9 +870,33 @@ export const CaseClinicsDoctorsTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
 
       {/* Doctors */}
       <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
-        <div className="flex items-center gap-2">
-          <Stethoscope className="w-4 h-4 text-teal-700" />
-          <h3 className="text-sm font-semibold text-slate-900">საქმეში მონაწილე ექიმები / პერსონალი</h3>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Stethoscope className="w-4 h-4 text-teal-700" />
+            <h3 className="text-sm font-semibold text-slate-900">საქმეში მონაწილე ექიმები / პერსონალი</h3>
+          </div>
+          {editable && (
+            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setDocMode('existing')}
+                className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                  docMode === 'existing' ? 'bg-sky-900 text-white' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                ცნობარიდან არჩევა
+              </button>
+              <button
+                type="button"
+                onClick={() => setDocMode('new')}
+                className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                  docMode === 'new' ? 'bg-sky-900 text-white' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                + ახალი ექიმი
+              </button>
+            </div>
+          )}
         </div>
 
         {linkedDocs.length === 0 ? (
@@ -674,7 +906,7 @@ export const CaseClinicsDoctorsTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
             {linkedDocs.map((link) => {
               const doc = snapshot.doctors.find((d) => d.id === link.doctorId);
               return (
-                <div key={link.id} className="rounded-lg border border-slate-200 p-3 text-xs flex flex-wrap justify-between gap-2">
+                <div key={link.id} className="rounded-lg border border-slate-200 p-3 text-xs flex flex-wrap justify-between items-center gap-2">
                   <div>
                     <strong className="text-sm text-slate-900">{doc?.fullName || 'ექიმი'}</strong>
                     <span className="ml-2 text-slate-500">({doc?.specialty})</span>
@@ -682,7 +914,30 @@ export const CaseClinicsDoctorsTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
                       როლი ქეისში: <strong>{DOC_ROLE_LABELS[link.roleInCase]}</strong> · ტელ: {link.snapshotPhone || doc?.phone || '—'}
                     </p>
                   </div>
-                  {link.nextAction && <span className="text-sky-900">შემდეგი: {link.nextAction}</span>}
+                  <div className="flex items-center gap-2">
+                    {link.nextAction && <span className="text-sky-900">შემდეგი: {link.nextAction}</span>}
+                    {editable && can('delete') && (
+                      <button
+                        type="button"
+                        aria-label={`ექიმის მოხსნა: ${doc?.fullName}`}
+                        onClick={async () => {
+                          const ok = await confirmAction({
+                            title: 'ექიმის მოხსნა ქეისიდან',
+                            message: `გსურთ ექიმის „${doc?.fullName}“ ამ ქეისიდან მოხსნა? (ცნობარში ექიმი შენარჩუნდება)`,
+                            confirmLabel: 'მოხსნა',
+                            danger: true,
+                          });
+                          if (!ok) return;
+                          await dataRepo.softDeleteCaseDoctor(link.id, currentUser);
+                          await refreshData();
+                          notify('ექიმი მოიხსნა ქეისიდან.', 'info');
+                        }}
+                        className="p-1 text-rose-700 hover:bg-rose-50 rounded"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -690,42 +945,119 @@ export const CaseClinicsDoctorsTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
         )}
 
         {editable && (
-          <form onSubmit={handleLinkDoc} className="pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <SearchableSelect
-              label="ექიმი ცნობარიდან"
-              value={selectedDocId}
-              onChange={setSelectedDocId}
-              options={snapshot.doctors
-                .filter((d) => !d.deletedAt)
-                .map((d) => ({ value: d.id, label: d.fullName, sublabel: d.specialty }))}
-            />
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">როლი საქმეში</label>
-              <select
-                value={docRole}
-                onChange={(e) => setDocRole(e.target.value as CaseDoctorRole)}
-                className="w-full min-h-[40px] rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+          <form onSubmit={handleLinkDoc} className="pt-3 border-t border-slate-100 space-y-3">
+            {docMode === 'existing' ? (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <SearchableSelect
+                  label="ექიმი ცნობარიდან"
+                  value={selectedDocId}
+                  onChange={setSelectedDocId}
+                  options={snapshot.doctors
+                    .filter((d) => !d.deletedAt)
+                    .map((d) => ({ value: d.id, label: d.fullName, sublabel: d.specialty }))}
+                />
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">როლი საქმეში</label>
+                  <select
+                    value={docRole}
+                    onChange={(e) => setDocRole(e.target.value as CaseDoctorRole)}
+                    className="w-full min-h-[40px] rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  >
+                    {Object.entries(DOC_ROLE_LABELS).map(([k, lbl]) => (
+                      <option key={k} value={k}>
+                        {lbl}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">შემდეგი მოქმედება</label>
+                  <input
+                    type="text"
+                    value={docNextAction}
+                    onChange={(e) => setDocNextAction(e.target.value)}
+                    placeholder="მაგ: ახსნა-განმარტების მიღება"
+                    className="w-full min-h-[40px] rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-teal-200 bg-teal-50/40 p-3.5 space-y-2.5">
+                <p className="text-[11px] text-teal-900">
+                  ახალი ექიმი ავტომატურად შეინახება ცნობარში და დაუკავშირდება ამ ქეისს.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                  <input
+                    type="text"
+                    required
+                    placeholder="ექიმის სახელი და გვარი *"
+                    value={newDocName}
+                    onChange={(e) => setNewDocName(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                  <input
+                    type="text"
+                    placeholder="სპეციალობა (მაგ: ქირურგი)"
+                    value={newDocSpecialty}
+                    onChange={(e) => setNewDocSpecialty(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                  <input
+                    type="text"
+                    placeholder="პოზიცია"
+                    value={newDocPosition}
+                    onChange={(e) => setNewDocPosition(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                  <input
+                    type="tel"
+                    placeholder="ტელეფონი"
+                    value={newDocPhone}
+                    onChange={(e) => setNewDocPhone(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                  <select
+                    value={docRole}
+                    onChange={(e) => setDocRole(e.target.value as CaseDoctorRole)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  >
+                    {Object.entries(DOC_ROLE_LABELS).map(([k, lbl]) => (
+                      <option key={k} value={k}>
+                        {lbl}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={newDocOrgId}
+                    onChange={(e) => setNewDocOrgId(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  >
+                    <option value="">კლინიკა (არასავალდებულო)</option>
+                    {snapshot.organizations
+                      .filter((o) => !o.deletedAt)
+                      .map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.legalName}
+                        </option>
+                      ))}
+                  </select>
+                  <input
+                    type="text"
+                    placeholder="შემდეგი მოქმედება ექიმთან"
+                    value={docNextAction}
+                    onChange={(e) => setDocNextAction(e.target.value)}
+                    className="sm:col-span-2 lg:col-span-3 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                </div>
+              </div>
+            )}
+            <div className="flex justify-end">
+              <button
+                type="submit"
+                disabled={docMode === 'existing' ? !selectedDocId : !newDocName.trim()}
+                className="px-4 py-2 text-xs font-medium text-white bg-sky-800 rounded-lg disabled:opacity-40"
               >
-                {Object.entries(DOC_ROLE_LABELS).map(([k, lbl]) => (
-                  <option key={k} value={k}>
-                    {lbl}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">შემდეგი მოქმედება</label>
-              <input
-                type="text"
-                value={docNextAction}
-                onChange={(e) => setDocNextAction(e.target.value)}
-                placeholder="მაგ: ახსნა-განმარტების მიღება"
-                className="w-full min-h-[40px] rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              />
-            </div>
-            <div className="sm:col-span-3 flex justify-end">
-              <button type="submit" disabled={!selectedDocId} className="px-4 py-2 text-xs font-medium text-white bg-sky-800 rounded-lg disabled:opacity-40">
-                + ექიმის დაკავშირება
+                {docMode === 'existing' ? '+ ექიმის დაკავშირება' : '+ ექიმის შექმნა და მიბმა'}
               </button>
             </div>
           </form>
@@ -762,6 +1094,8 @@ export const CaseVisitsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medicalC
   const [explRequested, setExplRequested] = useState(false);
   const [explReceived, setExplReceived] = useState(false);
   const [explDate, setExplDate] = useState('');
+  const [visitPendingFiles, setVisitPendingFiles] = useState<PendingUploadItem[]>([]);
+  const [visitNewOrgName, setVisitNewOrgName] = useState('');
 
   if (!snapshot || !currentUser) return null;
   const editable = can('edit');
@@ -842,10 +1176,32 @@ export const CaseVisitsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medicalC
         ]
       : [];
 
+    let resolvedVisitOrgId = orgId;
+    if (orgId === '__new__' && visitNewOrgName.trim()) {
+      const createdOrg = await dataRepo.createAndLinkOrganization({
+        caseId: medicalCase.id,
+        orgData: { legalName: visitNewOrgName.trim() },
+        user: currentUser,
+      });
+      resolvedVisitOrgId = createdOrg.org.id;
+    }
+
+    const visitId = editingVisit?.id || generateUuid();
+    const uploadedVisitFiles =
+      visitPendingFiles.length > 0
+        ? await uploadAttachmentBatch({
+            items: visitPendingFiles,
+            caseId: medicalCase.id,
+            linkedEntityType: 'visit',
+            linkedEntityId: visitId,
+            user: currentUser,
+          })
+        : [];
+
     const visit: Visit = {
-      id: editingVisit?.id || generateUuid(),
+      id: visitId,
       caseId: medicalCase.id,
-      organizationId: orgId || medicalCase.primaryOrganizationId || '',
+      organizationId: resolvedVisitOrgId || medicalCase.primaryOrganizationId || '',
       address: address.trim(),
       plannedDateTime,
       purpose: purpose.trim(),
@@ -864,7 +1220,7 @@ export const CaseVisitsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medicalC
       actNumber: actNumber.trim() || undefined,
       actDate: actDate || undefined,
       actSignatories: actSignatories.trim() || undefined,
-      actAttachmentIds: editingVisit?.actAttachmentIds || [],
+      actAttachmentIds: [...(editingVisit?.actAttachmentIds || []), ...uploadedVisitFiles.map((a) => a.id)],
       docSeizureStatus,
       docSeizureDescription: docSeizureDesc.trim() || undefined,
       docSeizureForm,
@@ -882,9 +1238,11 @@ export const CaseVisitsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medicalC
     setPurpose('');
     setActNumber('');
     setExplDoctorName('');
+    setVisitPendingFiles([]);
+    setVisitNewOrgName('');
     setShowAdd(false);
     await refreshData();
-    notify('ვიზიტი და აქტის სტატუსი შენახულია.', 'success');
+    notify('ვიზიტი, აქტის სტატუსი და ფაილები შენახულია.', 'success');
   };
 
   return (
@@ -921,7 +1279,18 @@ export const CaseVisitsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medicalC
                       {o.legalName}
                     </option>
                   ))}
+                <option value="__new__">+ ახალი კლინიკის შეყვანა</option>
               </select>
+              {orgId === '__new__' && (
+                <input
+                  type="text"
+                  required
+                  placeholder="ახალი კლინიკის დასახელება *"
+                  value={visitNewOrgName}
+                  onChange={(e) => setVisitNewOrgName(e.target.value)}
+                  className="mt-1.5 w-full rounded-lg border border-sky-300 bg-sky-50/40 px-2.5 py-1.5 text-xs"
+                />
+              )}
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">დაგეგმილი თარიღი/დრო</label>
@@ -1121,6 +1490,14 @@ export const CaseVisitsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medicalC
             />
           </div>
 
+          <PendingFilePicker
+            compact
+            items={visitPendingFiles}
+            onChange={setVisitPendingFiles}
+            defaultCategory="შემოწმების აქტი / ვიზიტის მასალა"
+            label="ვიზიტის, აქტის ან ახსნა-განმარტების ფაილის მიმაგრება"
+          />
+
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setShowAdd(false)} className="px-3 py-1.5 text-xs text-slate-600">
               გაუქმება
@@ -1185,15 +1562,21 @@ export const CaseVisitsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medicalC
                     ))}
                   </div>
                 )}
-                {editable && (
-                  <details className="pt-1">
-                    <summary className="cursor-pointer text-sky-800 font-medium">ვიზიტის / აქტის ფაილების მიმაგრება ({visitAttachments.length})</summary>
-                    <div className="mt-2 space-y-2">
-                      <FileUploader caseId={medicalCase.id} linkedEntityType="visit" linkedEntityId={v.id} defaultCategory="შემოწმების აქტი / მტკიცებულება" />
-                      <AttachmentList attachments={visitAttachments} />
-                    </div>
-                  </details>
-                )}
+                <div className="pt-2 border-t border-slate-100 space-y-2">
+                  <span className="text-[11px] font-semibold text-slate-700 block">
+                    ვიზიტის და აქტის ფაილები ({visitAttachments.length})
+                  </span>
+                  {editable && (
+                    <FileUploader
+                      compact
+                      caseId={medicalCase.id}
+                      linkedEntityType="visit"
+                      linkedEntityId={v.id}
+                      defaultCategory="შემოწმების აქტი / მტკიცებულება"
+                    />
+                  )}
+                  {visitAttachments.length > 0 && <AttachmentList attachments={visitAttachments} />}
+                </div>
               </div>
             );
           })}
@@ -1210,8 +1593,15 @@ export const CaseOrdersCommissionsTab: React.FC<{ medicalCase: MedicalCase }> = 
   const [issuer, setIssuer] = useState('');
   const [issuedDate, setIssuedDate] = useState(getTbilisiDateISO());
   const [basis, setBasis] = useState('');
+  const [orderPendingFiles, setOrderPendingFiles] = useState<PendingUploadItem[]>([]);
+
+  const [commMode, setCommMode] = useState<'existing' | 'new'>('existing');
   const [selectedCommissionId, setSelectedCommissionId] = useState('');
   const [stageNote, setStageNote] = useState('');
+  const [newCommName, setNewCommName] = useState('');
+  const [newCommType, setNewCommType] = useState('შემოწმების ჯგუფი');
+  const [newCommChair, setNewCommChair] = useState(currentUser?.fullName || '');
+  const [newCommMembers, setNewCommMembers] = useState('');
 
   if (!snapshot || !currentUser) return null;
   const editable = can('edit');
@@ -1222,8 +1612,20 @@ export const CaseOrdersCommissionsTab: React.FC<{ medicalCase: MedicalCase }> = 
     e.preventDefault();
     if (!orderNumber.trim()) return;
     const now = new Date().toISOString();
+    const orderId = generateUuid();
+    const uploadedOrderFiles =
+      orderPendingFiles.length > 0
+        ? await uploadAttachmentBatch({
+            items: orderPendingFiles,
+            caseId: medicalCase.id,
+            linkedEntityType: 'order',
+            linkedEntityId: orderId,
+            user: currentUser,
+          })
+        : [];
+
     const order: Order = {
-      id: generateUuid(),
+      id: orderId,
       caseId: medicalCase.id,
       orderTypeId,
       orderNumber: orderNumber.trim(),
@@ -1231,7 +1633,7 @@ export const CaseOrdersCommissionsTab: React.FC<{ medicalCase: MedicalCase }> = 
       issuedDate,
       basis: basis.trim(),
       status: 'active',
-      attachmentIds: [],
+      attachmentIds: uploadedOrderFiles.map((a) => a.id),
       createdAt: now,
       updatedAt: now,
       createdBy: currentUser.id,
@@ -1240,32 +1642,57 @@ export const CaseOrdersCommissionsTab: React.FC<{ medicalCase: MedicalCase }> = 
     await dataRepo.saveOrder(order, currentUser);
     setOrderNumber('');
     setBasis('');
+    setOrderPendingFiles([]);
     await refreshData();
-    notify('ბრძანება/აქტი დაემატა.', 'success');
+    notify('ბრძანება/აქტი და მიმაგრებული ფაილები შენახულია.', 'success');
   };
 
   const handleLinkCommission = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedCommissionId) return;
-    const now = new Date().toISOString();
-    await dataRepo.linkCommissionToCase(
-      {
-        id: generateUuid(),
+    if (commMode === 'existing') {
+      if (!selectedCommissionId) return;
+      const now = new Date().toISOString();
+      await dataRepo.linkCommissionToCase(
+        {
+          id: generateUuid(),
+          caseId: medicalCase.id,
+          commissionId: selectedCommissionId,
+          stageNote: stageNote.trim() || undefined,
+          assignedDate: getTbilisiDateISO(),
+          createdAt: now,
+          updatedAt: now,
+          createdBy: currentUser.id,
+          updatedBy: currentUser.id,
+        },
+        currentUser
+      );
+      setSelectedCommissionId('');
+      setStageNote('');
+      await refreshData();
+      notify('კომისია/ჯგუფი მიენიჭა ქეისს.', 'success');
+    } else {
+      if (!newCommName.trim()) {
+        notify('მიუთითეთ კომისიის / ჯგუფის დასახელება.', 'warning');
+        return;
+      }
+      await dataRepo.createAndLinkCommission({
         caseId: medicalCase.id,
-        commissionId: selectedCommissionId,
-        stageNote: stageNote.trim() || undefined,
-        assignedDate: getTbilisiDateISO(),
-        createdAt: now,
-        updatedAt: now,
-        createdBy: currentUser.id,
-        updatedBy: currentUser.id,
-      },
-      currentUser
-    );
-    setSelectedCommissionId('');
-    setStageNote('');
-    await refreshData();
-    notify('კომისია/ჯგუფი მიენიჭა ქეისს.', 'success');
+        commissionData: {
+          name: newCommName.trim(),
+          type: newCommType.trim() || 'შემოწმების ჯგუფი',
+          chairName: newCommChair.trim() || currentUser.fullName,
+          membersText: newCommMembers,
+          stageNote: stageNote.trim() || undefined,
+        },
+        user: currentUser,
+      });
+      setNewCommName('');
+      setNewCommMembers('');
+      setStageNote('');
+      setCommMode('existing');
+      await refreshData();
+      notify('ახალი კომისია/ჯგუფი შეიქმნა ცნობარში და მიენიჭა ქეისს.', 'success');
+    }
   };
 
   return (
@@ -1276,16 +1703,31 @@ export const CaseOrdersCommissionsTab: React.FC<{ medicalCase: MedicalCase }> = 
         {orders.length === 0 ? (
           <p className="text-xs text-slate-500">ბრძანებები ჯერ არ არის დამატებული.</p>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-2.5">
             {orders.map((o) => {
               const typeLabel = snapshot.settings.orderTypes.find((t) => t.id === o.orderTypeId)?.label || o.orderTypeId;
+              const orderFiles = snapshot.attachments.filter(
+                (a) => !a.deletedAt && a.linkedEntityType === 'order' && a.linkedEntityId === o.id
+              );
               return (
-                <div key={o.id} className="rounded-lg border border-slate-200 p-3 text-xs flex flex-wrap justify-between gap-2">
-                  <div>
-                    <strong className="text-slate-900">№{o.orderNumber}</strong> · {typeLabel} · {formatGeorgianDate(o.issuedDate)}
-                    <p className="text-slate-600 mt-0.5">გამომცემი: {o.issuer || '—'} · საფუძველი: {o.basis || '—'}</p>
+                <div key={o.id} className="rounded-lg border border-slate-200 p-3 text-xs space-y-2">
+                  <div className="flex flex-wrap justify-between gap-2">
+                    <div>
+                      <strong className="text-slate-900">№{o.orderNumber}</strong> · {typeLabel} · {formatGeorgianDate(o.issuedDate)}
+                      <p className="text-slate-600 mt-0.5">გამომცემი: {o.issuer || '—'} · საფუძველი: {o.basis || '—'}</p>
+                    </div>
+                    <StatusLabel label={o.status === 'active' ? 'მოქმედი' : o.status === 'amended' ? 'შეცვლილი' : 'გაუქმებული'} tone="teal" compact />
                   </div>
-                  <StatusLabel label={o.status === 'active' ? 'მოქმედი' : o.status === 'amended' ? 'შეცვლილი' : 'გაუქმებული'} tone="teal" compact />
+                  {editable && (
+                    <FileUploader
+                      compact
+                      caseId={medicalCase.id}
+                      linkedEntityType="order"
+                      linkedEntityId={o.id}
+                      defaultCategory="ბრძანება / აქტი"
+                    />
+                  )}
+                  {orderFiles.length > 0 && <AttachmentList attachments={orderFiles} />}
                 </div>
               );
             })}
@@ -1293,59 +1735,95 @@ export const CaseOrdersCommissionsTab: React.FC<{ medicalCase: MedicalCase }> = 
         )}
 
         {editable && (
-          <form onSubmit={handleAddOrder} className="pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
-            <select
-              value={orderTypeId}
-              onChange={(e) => setOrderTypeId(e.target.value)}
-              className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs"
-            >
-              {snapshot.settings.orderTypes.map((ot) => (
-                <option key={ot.id} value={ot.id}>
-                  {ot.label}
-                </option>
-              ))}
-            </select>
-            <input
-              type="text"
-              required
-              placeholder="ბრძანების № *"
-              value={orderNumber}
-              onChange={(e) => setOrderNumber(e.target.value)}
-              className="rounded-lg border border-slate-300 px-3 py-2 text-xs"
+          <form onSubmit={handleAddOrder} className="pt-3 border-t border-slate-100 space-y-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+              <select
+                value={orderTypeId}
+                onChange={(e) => setOrderTypeId(e.target.value)}
+                className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs"
+              >
+                {snapshot.settings.orderTypes.map((ot) => (
+                  <option key={ot.id} value={ot.id}>
+                    {ot.label}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="text"
+                required
+                placeholder="ბრძანების № *"
+                value={orderNumber}
+                onChange={(e) => setOrderNumber(e.target.value)}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-xs"
+              />
+              <input
+                type="text"
+                placeholder="გამომცემი"
+                value={issuer}
+                onChange={(e) => setIssuer(e.target.value)}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-xs"
+              />
+              <input
+                type="date"
+                value={issuedDate}
+                onChange={(e) => setIssuedDate(e.target.value)}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-xs"
+              />
+              <input
+                type="text"
+                placeholder="საფუძველი / აღწერა"
+                value={basis}
+                onChange={(e) => setBasis(e.target.value)}
+                className="sm:col-span-2 lg:col-span-4 rounded-lg border border-slate-300 px-3 py-2 text-xs"
+              />
+            </div>
+            <PendingFilePicker
+              compact
+              items={orderPendingFiles}
+              onChange={setOrderPendingFiles}
+              defaultCategory="ბრძანება / აქტი"
+              label="ბრძანების ფაილის მიმაგრება"
             />
-            <input
-              type="text"
-              placeholder="გამომცემი"
-              value={issuer}
-              onChange={(e) => setIssuer(e.target.value)}
-              className="rounded-lg border border-slate-300 px-3 py-2 text-xs"
-            />
-            <input
-              type="date"
-              value={issuedDate}
-              onChange={(e) => setIssuedDate(e.target.value)}
-              className="rounded-lg border border-slate-300 px-3 py-2 text-xs"
-            />
-            <input
-              type="text"
-              placeholder="საფუძველი / აღწერა"
-              value={basis}
-              onChange={(e) => setBasis(e.target.value)}
-              className="sm:col-span-3 rounded-lg border border-slate-300 px-3 py-2 text-xs"
-            />
-            <button type="submit" className="px-3 py-2 text-xs font-medium text-white bg-sky-800 rounded-lg">
-              + ბრძანების დამატება
-            </button>
+            <div className="flex justify-end">
+              <button type="submit" className="px-4 py-2 text-xs font-medium text-white bg-sky-800 rounded-lg">
+                + ბრძანების დამატება
+              </button>
+            </div>
           </form>
         )}
       </div>
 
       {/* Commissions */}
       <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
-        <div className="flex items-center gap-2">
-          <Users className="w-4 h-4 text-sky-800" />
-          <h3 className="text-sm font-semibold text-slate-900">კომისიები და შემოწმების ჯგუფები</h3>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Users className="w-4 h-4 text-sky-800" />
+            <h3 className="text-sm font-semibold text-slate-900">კომისიები და შემოწმების ჯგუფები</h3>
+          </div>
+          {editable && (
+            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setCommMode('existing')}
+                className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                  commMode === 'existing' ? 'bg-sky-900 text-white' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                არსებული ჯგუფი
+              </button>
+              <button
+                type="button"
+                onClick={() => setCommMode('new')}
+                className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                  commMode === 'new' ? 'bg-sky-900 text-white' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                + ახალი კომისია / ჯგუფი
+              </button>
+            </div>
+          )}
         </div>
+
         {caseComms.length === 0 ? (
           <p className="text-xs text-slate-500">კომისია/ჯგუფი ჯერ არ არის მიბმული.</p>
         ) : (
@@ -1370,35 +1848,92 @@ export const CaseOrdersCommissionsTab: React.FC<{ medicalCase: MedicalCase }> = 
         )}
 
         {editable && (
-          <form onSubmit={handleLinkCommission} className="pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-            <select
-              value={selectedCommissionId}
-              onChange={(e) => setSelectedCommissionId(e.target.value)}
-              className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs"
-            >
-              <option value="">აირჩიეთ კომისია/ჯგუფი...</option>
-              {snapshot.commissions
-                .filter((c) => !c.deletedAt)
-                .map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} ({c.members.length} წევრი)
-                  </option>
-                ))}
-            </select>
-            <input
-              type="text"
-              placeholder="ეტაპის შენიშვნა"
-              value={stageNote}
-              onChange={(e) => setStageNote(e.target.value)}
-              className="rounded-lg border border-slate-300 px-3 py-2 text-xs"
-            />
-            <button
-              type="submit"
-              disabled={!selectedCommissionId}
-              className="px-3 py-2 text-xs font-medium text-white bg-sky-800 rounded-lg disabled:opacity-40"
-            >
-              + ჯგუფის მინიჭება
-            </button>
+          <form onSubmit={handleLinkCommission} className="pt-3 border-t border-slate-100 space-y-2.5">
+            {commMode === 'existing' ? (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <select
+                  value={selectedCommissionId}
+                  onChange={(e) => setSelectedCommissionId(e.target.value)}
+                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs"
+                >
+                  <option value="">აირჩიეთ კომისია/ჯგუფი...</option>
+                  {snapshot.commissions
+                    .filter((c) => !c.deletedAt)
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.members.length} წევრი)
+                      </option>
+                    ))}
+                </select>
+                <input
+                  type="text"
+                  placeholder="ეტაპის შენიშვნა"
+                  value={stageNote}
+                  onChange={(e) => setStageNote(e.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                />
+                <button
+                  type="submit"
+                  disabled={!selectedCommissionId}
+                  className="px-3 py-2 text-xs font-medium text-white bg-sky-800 rounded-lg disabled:opacity-40"
+                >
+                  + ჯგუფის მინიჭება
+                </button>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-sky-200 bg-sky-50/40 p-3 space-y-2.5">
+                <p className="text-[11px] text-sky-900">
+                  ახალი კომისია ავტომატურად შეინახება ცნობარში და მიენიჭება ამ ქეისს.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                  <input
+                    type="text"
+                    required
+                    placeholder="კომისიის / ჯგუფის დასახელება *"
+                    value={newCommName}
+                    onChange={(e) => setNewCommName(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                  />
+                  <input
+                    type="text"
+                    placeholder="ტიპი (მაგ: არაგეგმური ჯგუფი)"
+                    value={newCommType}
+                    onChange={(e) => setNewCommType(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                  />
+                  <input
+                    type="text"
+                    placeholder="თავმჯდომარე"
+                    value={newCommChair}
+                    onChange={(e) => setNewCommChair(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                  />
+                  <input
+                    type="text"
+                    placeholder="წევრები (მძიმით გამოყოფილი)"
+                    value={newCommMembers}
+                    onChange={(e) => setNewCommMembers(e.target.value)}
+                    className="sm:col-span-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                  />
+                  <input
+                    type="text"
+                    placeholder="ეტაპის შენიშვნა"
+                    value={stageNote}
+                    onChange={(e) => setStageNote(e.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+                  />
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={!newCommName.trim()}
+                    className="px-4 py-2 text-xs font-medium text-white bg-sky-800 rounded-lg disabled:opacity-40"
+                  >
+                    + კომისიის შექმნა და მინიჭება
+                  </button>
+                </div>
+              </div>
+            )}
           </form>
         )}
       </div>

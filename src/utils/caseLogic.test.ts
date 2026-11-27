@@ -4,6 +4,8 @@ import {
   computeDashboardStats,
   evaluateClosureReadiness,
   filterAndSortCases,
+  findMatchingDoctor,
+  findMatchingOrganization,
   formatCaseNumber,
   formatGeorgianDate,
   generateCasesCsv,
@@ -257,3 +259,41 @@ test('case filtering matches applicant, patient, clinic, and case number', () =>
   assert.equal(res.length, 1);
   assert.equal(res[0].id, 'c1');
 });
+
+test('inline directory matching reuses existing clinic by taxId or name and doctor by name', () => {
+  const orgs = [
+    {
+      id: 'org-1',
+      legalName: 'შპს ევრომედ კლინიკა',
+      taxId: '405123456',
+      address: 'თბილისი',
+      municipality: 'თბილისი',
+      branches: [],
+      contacts: [],
+      createdAt: '2026-01-01',
+      updatedAt: '2026-01-01',
+      createdBy: 'u',
+      updatedBy: 'u',
+    },
+  ];
+  assert.equal(findMatchingOrganization(orgs, { legalName: '  შპს   ევრომედ კლინიკა ' })?.id, 'org-1');
+  assert.equal(findMatchingOrganization(orgs, { legalName: 'სხვა სახელი', taxId: '405123456' })?.id, 'org-1');
+  assert.equal(findMatchingOrganization(orgs, { legalName: 'ახალი კლინიკა', taxId: '999888777' }), undefined);
+
+  const docs = [
+    {
+      id: 'doc-1',
+      fullName: 'გიორგი ვაშაძე',
+      specialty: 'ქირურგი',
+      position: 'ქირურგი',
+      organizationIds: ['org-1'],
+      createdAt: '2026-01-01',
+      updatedAt: '2026-01-01',
+      createdBy: 'u',
+      updatedBy: 'u',
+    },
+  ];
+  assert.equal(findMatchingDoctor(docs, ' გიორგი  ვაშაძე ')?.id, 'doc-1');
+  assert.equal(findMatchingDoctor(docs, 'ნინო ბერიძე'), undefined);
+});
+

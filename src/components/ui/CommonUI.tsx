@@ -20,11 +20,12 @@ import {
   CaseComment,
   CustomFieldDefinition,
   CustomFieldTargetPage,
+  SafeUser,
 } from '../../models/types';
 import { useApp } from '../../context/AppContext';
 import { storageProvider } from '../../storage/StorageProvider';
 import { dataRepo } from '../../repositories/DataRepository';
-import { formatGeorgianDate, formatGeorgianDateTime, generateUuid } from '../../utils/caseLogic';
+import { formatGeorgianDate, formatGeorgianDateTime, generateUuid, validateUploadFile } from '../../utils/caseLogic';
 
 export const ToastContainer: React.FC = () => {
   const { toasts, dismissToast } = useApp();
@@ -438,13 +439,198 @@ export const FieldCommentButton: React.FC<{
   );
 };
 
+export interface PendingUploadItem {
+  tempId: string;
+  file: File;
+  title: string;
+  category: string;
+}
+
+export async function uploadAttachmentBatch(params: {
+  items: PendingUploadItem[];
+  caseId?: string;
+  linkedEntityType: Attachment['linkedEntityType'];
+  linkedEntityId?: string;
+  user: SafeUser;
+}): Promise<Attachment[]> {
+  const { items, caseId, linkedEntityType, linkedEntityId, user } = params;
+  const uploaded: Attachment[] = [];
+  for (const item of items) {
+    const stored = await storageProvider.saveFile(item.file);
+    const now = new Date().toISOString();
+    const att: Attachment = {
+      id: generateUuid(),
+      caseId,
+      linkedEntityType,
+      linkedEntityId,
+      title: item.title.trim() || item.file.name,
+      fileName: stored.fileName,
+      category: item.category.trim() || 'ზოგადი',
+      mimeType: stored.mimeType,
+      sizeBytes: stored.sizeBytes,
+      blobKey: stored.blobKey,
+      currentVersion: 1,
+      versions: [
+        {
+          version: 1,
+          fileName: stored.fileName,
+          mimeType: stored.mimeType,
+          sizeBytes: stored.sizeBytes,
+          uploadedAt: now,
+          uploadedBy: user.id,
+          blobKey: stored.blobKey,
+        },
+      ],
+      createdAt: now,
+      updatedAt: now,
+      createdBy: user.id,
+      updatedBy: user.id,
+    };
+    await dataRepo.saveAttachment(att, user);
+    uploaded.push(att);
+  }
+  return uploaded;
+}
+
+export const PendingFilePicker: React.FC<{
+  items: PendingUploadItem[];
+  onChange: (items: PendingUploadItem[]) => void;
+  defaultCategory?: string;
+  label?: string;
+  compact?: boolean;
+}> = ({
+  items,
+  onChange,
+  defaultCategory = 'ზოგადი დოკუმენტი',
+  label = 'ფაილების / დოკუმენტების მიმაგრება',
+  compact = false,
+}) => {
+  const { notify } = useApp();
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [category, setCategory] = useState(defaultCategory);
+  const [dragging, setDragging] = useState(false);
+
+  const handleFiles = (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) return;
+    const next: PendingUploadItem[] = [];
+    for (const f of Array.from(fileList)) {
+      const check = validateUploadFile({ name: f.name, size: f.size, type: f.type });
+      if (!check.valid) {
+        notify(check.error || `ფაილი „${f.name}“ ვერ დაემატა.`, 'error');
+        continue;
+      }
+      next.push({
+        tempId: generateUuid(),
+        file: f,
+        title: f.name,
+        category: category.trim() || defaultCategory,
+      });
+    }
+    if (next.length > 0) {
+      onChange([...items, ...next]);
+    }
+    if (inputRef.current) inputRef.current.value = '';
+  };
+
+  return (
+    <div className={`rounded-xl border border-slate-200 bg-slate-50/70 ${compact ? 'p-3 space-y-2' : 'p-4 space-y-2.5'}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-semibold text-slate-800">{label}</span>
+        {!compact && (
+          <input
+            type="text"
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            placeholder="ფაილის კატეგორია"
+            aria-label="ფაილის კატეგორია"
+            className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs w-48"
+          />
+        )}
+      </div>
+
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragging(false);
+          handleFiles(e.dataTransfer.files);
+        }}
+        className={`flex flex-col sm:flex-row items-center justify-between gap-2.5 rounded-lg border border-dashed ${
+          compact ? 'p-2.5' : 'p-3.5'
+        } transition-colors ${dragging ? 'border-sky-600 bg-sky-50' : 'border-slate-300 bg-white'}`}
+      >
+        <p className="text-xs text-slate-600">
+          აირჩიეთ ან ჩააგდეთ ფაილი (PDF, DOCX, XLSX, JPG, PNG, TXT, CSV — მაქს. 15 MB)
+        </p>
+        <div className="shrink-0">
+          <input
+            ref={inputRef}
+            type="file"
+            multiple
+            accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.txt,.csv"
+            className="hidden"
+            onChange={(e) => handleFiles(e.target.files)}
+          />
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            className="min-h-[36px] inline-flex items-center gap-1.5 rounded-lg bg-sky-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-900 whitespace-nowrap"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            ფაილის არჩევა
+          </button>
+        </div>
+      </div>
+
+      {items.length > 0 && (
+        <div className="space-y-1.5">
+          {items.map((item) => (
+            <div
+              key={item.tempId}
+              className="flex items-center justify-between gap-2 rounded-lg border border-sky-200 bg-white px-2.5 py-1.5 text-xs"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <FileText className="w-3.5 h-3.5 text-sky-800 shrink-0" />
+                <span className="font-medium text-slate-800 truncate">{item.file.name}</span>
+                <span className="text-slate-500 shrink-0 tabular-nums">
+                  {(item.file.size / 1024).toFixed(1)} KB
+                </span>
+              </div>
+              <button
+                type="button"
+                aria-label={`მიმაგრებული ფაილის მოხსნა: ${item.file.name}`}
+                onClick={() => onChange(items.filter((x) => x.tempId !== item.tempId))}
+                className="p-1 text-rose-700 hover:bg-rose-50 rounded"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const FileUploader: React.FC<{
   caseId?: string;
   linkedEntityType: Attachment['linkedEntityType'];
   linkedEntityId?: string;
   defaultCategory?: string;
+  compact?: boolean;
   onUploaded?: (attachment: Attachment) => void;
-}> = ({ caseId, linkedEntityType, linkedEntityId, defaultCategory = 'ზოგადი დოკუმენტი', onUploaded }) => {
+}> = ({
+  caseId,
+  linkedEntityType,
+  linkedEntityId,
+  defaultCategory = 'ზოგადი დოკუმენტი',
+  compact = false,
+  onUploaded,
+}) => {
   const { currentUser, refreshData, notify, can } = useApp();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -457,51 +643,61 @@ export const FileUploader: React.FC<{
 
   if (!can('create') && !can('edit')) return null;
 
-  const processFile = async (file: File) => {
-    if (!currentUser) return;
+  const processFiles = async (fileList: FileList | File[]) => {
+    const files = Array.from(fileList);
+    if (!currentUser || files.length === 0) return;
     setUploading(true);
     try {
-      const stored = await storageProvider.saveFile(file);
-      const now = new Date().toISOString();
-      const att: Attachment = {
-        id: generateUuid(),
-        caseId,
-        linkedEntityType,
-        linkedEntityId,
-        title: title.trim() || file.name,
-        fileName: stored.fileName,
-        category: category.trim() || 'ზოგადი',
-        description: description.trim() || undefined,
-        documentDate: documentDate || undefined,
-        receivedFrom: receivedFrom.trim() || undefined,
-        mimeType: stored.mimeType,
-        sizeBytes: stored.sizeBytes,
-        blobKey: stored.blobKey,
-        currentVersion: 1,
-        versions: [
-          {
-            version: 1,
-            fileName: stored.fileName,
-            mimeType: stored.mimeType,
-            sizeBytes: stored.sizeBytes,
-            uploadedAt: now,
-            uploadedBy: currentUser.id,
-            blobKey: stored.blobKey,
-          },
-        ],
-        createdAt: now,
-        updatedAt: now,
-        createdBy: currentUser.id,
-        updatedBy: currentUser.id,
-      };
-      await dataRepo.saveAttachment(att, currentUser);
+      let lastAtt: Attachment | undefined;
+      for (const file of files) {
+        const stored = await storageProvider.saveFile(file);
+        const now = new Date().toISOString();
+        const att: Attachment = {
+          id: generateUuid(),
+          caseId,
+          linkedEntityType,
+          linkedEntityId,
+          title: files.length === 1 && title.trim() ? title.trim() : file.name,
+          fileName: stored.fileName,
+          category: category.trim() || 'ზოგადი',
+          description: description.trim() || undefined,
+          documentDate: documentDate || undefined,
+          receivedFrom: receivedFrom.trim() || undefined,
+          mimeType: stored.mimeType,
+          sizeBytes: stored.sizeBytes,
+          blobKey: stored.blobKey,
+          currentVersion: 1,
+          versions: [
+            {
+              version: 1,
+              fileName: stored.fileName,
+              mimeType: stored.mimeType,
+              sizeBytes: stored.sizeBytes,
+              uploadedAt: now,
+              uploadedBy: currentUser.id,
+              blobKey: stored.blobKey,
+            },
+          ],
+          createdAt: now,
+          updatedAt: now,
+          createdBy: currentUser.id,
+          updatedBy: currentUser.id,
+        };
+        await dataRepo.saveAttachment(att, currentUser);
+        lastAtt = att;
+      }
       setTitle('');
       setDescription('');
       setReceivedFrom('');
       setDocumentDate('');
       await refreshData();
-      notify(`ფაილი „${att.fileName}“ წარმატებით აიტვირთა IndexedDB-ში.`, 'success');
-      if (onUploaded) onUploaded(att);
+      notify(
+        files.length > 1
+          ? `${files.length} ფაილი წარმატებით აიტვირთა IndexedDB-ში.`
+          : `ფაილი „${lastAtt?.fileName}“ წარმატებით აიტვირთა IndexedDB-ში.`,
+        'success'
+      );
+      if (onUploaded && lastAtt) onUploaded(lastAtt);
     } catch (err) {
       notify(err instanceof Error ? err.message : 'ფაილის ატვირთვა ვერ მოხერხდა.', 'error');
     } finally {
@@ -509,6 +705,58 @@ export const FileUploader: React.FC<{
       if (inputRef.current) inputRef.current.value = '';
     }
   };
+
+  if (compact) {
+    return (
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragging(false);
+          if (e.dataTransfer.files?.length) void processFiles(e.dataTransfer.files);
+        }}
+        className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 transition-colors ${
+          dragging ? 'border-sky-600 bg-sky-50' : 'border-slate-300 bg-slate-50/70'
+        }`}
+      >
+        <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="დოკუმენტის დასახელება (არასავალდებულო)"
+            className="flex-1 min-w-[160px] rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+          />
+          <span className="text-[11px] text-slate-500 hidden md:inline">{defaultCategory}</span>
+        </div>
+        <div className="shrink-0">
+          <input
+            ref={inputRef}
+            type="file"
+            multiple
+            accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.txt,.csv"
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files?.length) void processFiles(e.target.files);
+            }}
+          />
+          <button
+            type="button"
+            disabled={uploading}
+            onClick={() => inputRef.current?.click()}
+            className="min-h-[34px] inline-flex items-center gap-1.5 rounded-md bg-sky-800 px-3 py-1 text-xs font-medium text-white hover:bg-sky-900 disabled:opacity-50 whitespace-nowrap"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            {uploading ? 'იტვირთება...' : 'ფაილის ატვირთვა'}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 space-y-3">
@@ -559,8 +807,7 @@ export const FileUploader: React.FC<{
         onDrop={(e) => {
           e.preventDefault();
           setDragging(false);
-          const f = e.dataTransfer.files?.[0];
-          if (f) void processFile(f);
+          if (e.dataTransfer.files?.length) void processFiles(e.dataTransfer.files);
         }}
         className={`flex flex-col sm:flex-row items-center justify-between gap-3 rounded-lg border-2 border-dashed p-4 transition-colors ${
           dragging ? 'border-sky-600 bg-sky-50' : 'border-slate-300 bg-white'
@@ -578,11 +825,11 @@ export const FileUploader: React.FC<{
           <input
             ref={inputRef}
             type="file"
+            multiple
             accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.txt,.csv"
             className="hidden"
             onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) void processFile(f);
+              if (e.target.files?.length) void processFiles(e.target.files);
             }}
           />
           <button
@@ -600,10 +847,24 @@ export const FileUploader: React.FC<{
   );
 };
 
+const ENTITY_ORIGIN_LABELS: Record<Attachment['linkedEntityType'], string> = {
+  case: 'ქეისის ფაილი',
+  visit: 'ვიზიტი / აქტი',
+  act: 'შემოწმების აქტი',
+  order: 'ბრძანება',
+  document_request: 'მოთხოვნილი დოკუმენტი',
+  document_delivery: 'მოწოდებული დოკუმენტი',
+  correspondence: 'წერილი',
+  review_assignment: 'რეცენზია (გაგზავნა)',
+  review_response: 'რეცენზიის პასუხი',
+  general: 'საერთო საცავი',
+};
+
 export const AttachmentList: React.FC<{
   attachments: Attachment[];
   emptyText?: string;
-}> = ({ attachments, emptyText = 'მიმაგრებული ფაილები არ არის.' }) => {
+  showEntityOrigin?: boolean;
+}> = ({ attachments, emptyText = 'მიმაგრებული ფაილები არ არის.', showEntityOrigin = false }) => {
   const { can, currentUser, refreshData, notify, confirmAction, snapshot } = useApp();
   const [previewItem, setPreviewItem] = useState<{ att: Attachment; url: string; text?: string } | null>(null);
   const replaceRef = useRef<HTMLInputElement | null>(null);
@@ -718,16 +979,21 @@ export const AttachmentList: React.FC<{
       {attachments.map((att) => (
         <div
           key={att.id}
-          className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5"
+          className="flex flex-wrap items-start justify-between gap-2.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5"
         >
-          <div className="min-w-0">
+          <div className="min-w-[200px] flex-1">
             <div className="flex items-center gap-2 flex-wrap">
               <FileText className="w-4 h-4 text-sky-800 shrink-0" />
-              <span className="text-sm font-medium text-slate-900 truncate">{att.title || att.fileName}</span>
+              <span className="text-sm font-medium text-slate-900 break-all">{att.title || att.fileName}</span>
               <span className="text-xs text-slate-500 font-mono tabular-nums">v{att.currentVersion || 1}</span>
+              {showEntityOrigin && (
+                <span className="text-[11px] font-medium text-sky-900 bg-sky-50 border border-sky-200 rounded px-1.5 py-0.5">
+                  {ENTITY_ORIGIN_LABELS[att.linkedEntityType] || att.linkedEntityType}
+                </span>
+              )}
             </div>
             <div className="mt-0.5 text-xs text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-              <span>{att.fileName}</span>
+              <span className="break-all">{att.fileName}</span>
               <span aria-hidden="true">·</span>
               <span>{att.category}</span>
               <span aria-hidden="true">·</span>
@@ -749,7 +1015,7 @@ export const AttachmentList: React.FC<{
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex flex-wrap items-center gap-1.5">
             {can('download_file') && (
               <>
                 <button

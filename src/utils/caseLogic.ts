@@ -759,3 +759,35 @@ export function generateCasesCsv(params: {
   // UTF-8 BOM for clean Georgian rendering in Excel
   return `\uFEFF${headers.map(escapeCsvCell).join(',')}\r\n${rows.join('\r\n')}`;
 }
+
+export function normalizeEntityText(value?: string | null): string {
+  return (value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+export function findMatchingOrganization(
+  organizations: Organization[],
+  query: { legalName?: string; taxId?: string }
+): Organization | undefined {
+  const normTax = normalizeEntityText(query.taxId);
+  const normName = normalizeEntityText(query.legalName);
+  const active = organizations.filter((o) => !o.deletedAt);
+
+  if (normTax) {
+    const byTax = active.find((o) => normalizeEntityText(o.taxId) === normTax);
+    if (byTax) return byTax;
+  }
+  if (normName) {
+    return active.find((o) => normalizeEntityText(o.legalName) === normName);
+  }
+  return undefined;
+}
+
+export function findMatchingDoctor(
+  doctors: Doctor[],
+  fullName?: string
+): Doctor | undefined {
+  const normName = normalizeEntityText(fullName);
+  if (!normName) return undefined;
+  return doctors.find((d) => !d.deletedAt && normalizeEntityText(d.fullName) === normName);
+}
+

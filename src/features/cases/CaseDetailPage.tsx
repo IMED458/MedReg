@@ -2,12 +2,14 @@ import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
+  Building2,
   CheckCircle2,
   Lock,
   Printer,
   RotateCcw,
   Save,
   ShieldAlert,
+  Stethoscope,
   X,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
@@ -149,7 +151,23 @@ export const CaseDetailPage: React.FC = () => {
   const statusObj = settings.caseStatuses.find((s) => s.id === medicalCase.statusId);
   const assigneeUser = snapshot.users.find((u) => u.id === medicalCase.assignedTo);
 
-  const caseAttachments = snapshot.attachments.filter((a) => a.caseId === medicalCase.id && !a.deletedAt);
+  const caseAttachments = snapshot.attachments
+    .filter((a) => a.caseId === medicalCase.id && !a.deletedAt)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const linkedCaseOrgs = snapshot.caseOrganizations
+    .filter((co) => co.caseId === medicalCase.id && !co.deletedAt)
+    .map((co) => ({
+      link: co,
+      org: snapshot.organizations.find((o) => o.id === co.organizationId && !o.deletedAt),
+    }))
+    .filter((item) => Boolean(item.org));
+  const linkedCaseDocs = snapshot.caseDoctors
+    .filter((cd) => cd.caseId === medicalCase.id && !cd.deletedAt)
+    .map((cd) => ({
+      link: cd,
+      doc: snapshot.doctors.find((d) => d.id === cd.doctorId && !d.deletedAt),
+    }))
+    .filter((item) => Boolean(item.doc));
   const caseComments = snapshot.comments
     .filter((c) => c.caseId === medicalCase.id && !c.deletedAt)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -593,6 +611,94 @@ export const CaseDetailPage: React.FC = () => {
                 />
               </form>
 
+              {/* Quick Linked Clinic & Doctors + Quick File Upload inside Overview */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                    <h3 className="text-sm font-semibold text-slate-900">ქეისზე მიბმული კლინიკა და ექიმები</h3>
+                    <button
+                      type="button"
+                      onClick={() => setTab('clinics')}
+                      className="text-xs font-medium text-sky-800 hover:underline whitespace-nowrap"
+                    >
+                      + მართვა / დამატება
+                    </button>
+                  </div>
+
+                  <div className="space-y-2 text-xs">
+                    <div>
+                      <p className="text-[11px] font-medium text-slate-500 mb-1 flex items-center gap-1">
+                        <Building2 className="w-3.5 h-3.5 text-sky-800" />
+                        სამედიცინო დაწესებულება ({linkedCaseOrgs.length})
+                      </p>
+                      {linkedCaseOrgs.length === 0 ? (
+                        <p className="text-slate-500">კლინიკა მიბმული არ არის.</p>
+                      ) : (
+                        <div className="space-y-1">
+                          {linkedCaseOrgs.map(({ link, org }) => (
+                            <div
+                              key={link.id}
+                              className="rounded-lg border border-slate-100 bg-slate-50/80 px-2.5 py-1.5 flex items-center justify-between gap-2"
+                            >
+                              <span className="font-medium text-slate-900">{org!.legalName}</span>
+                              {org!.taxId && (
+                                <span className="font-mono text-[11px] text-slate-500 shrink-0">ს/კ {org!.taxId}</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="pt-1">
+                      <p className="text-[11px] font-medium text-slate-500 mb-1 flex items-center gap-1">
+                        <Stethoscope className="w-3.5 h-3.5 text-sky-800" />
+                        ექიმები / სპეციალისტები ({linkedCaseDocs.length})
+                      </p>
+                      {linkedCaseDocs.length === 0 ? (
+                        <p className="text-slate-500">ექიმი მიბმული არ არის.</p>
+                      ) : (
+                        <div className="space-y-1">
+                          {linkedCaseDocs.map(({ link, doc }) => (
+                            <div
+                              key={link.id}
+                              className="rounded-lg border border-slate-100 bg-slate-50/80 px-2.5 py-1.5 flex items-center justify-between gap-2"
+                            >
+                              <span className="font-medium text-slate-900">{doc!.fullName}</span>
+                              {doc!.specialty && (
+                                <span className="text-[11px] text-slate-500 shrink-0">{doc!.specialty}</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                    <h3 className="text-sm font-semibold text-slate-900">
+                      ქეისის სწრაფი ფაილები ({caseAttachments.length})
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() => setTab('files')}
+                      className="text-xs font-medium text-sky-800 hover:underline whitespace-nowrap"
+                    >
+                      ყველა ფაილი ({caseAttachments.length})
+                    </button>
+                  </div>
+                  <FileUploader
+                    compact
+                    caseId={medicalCase.id}
+                    linkedEntityType="case"
+                    linkedEntityId={medicalCase.id}
+                  />
+                  <AttachmentList attachments={caseAttachments.slice(0, 5)} showEntityOrigin />
+                </div>
+              </div>
+
               {/* Closure Checklist */}
               <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
                 <h3 className="text-sm font-semibold text-slate-900">ქეისის დასასრულის შემოწმებადი ჩეკლისტი</h3>
@@ -652,7 +758,7 @@ export const CaseDetailPage: React.FC = () => {
               <FileUploader caseId={medicalCase.id} linkedEntityType="case" linkedEntityId={medicalCase.id} />
               <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
                 <h3 className="text-sm font-semibold text-slate-900">ქეისთან დაკავშირებული ყველა ფაილი ({caseAttachments.length})</h3>
-                <AttachmentList attachments={caseAttachments} />
+                <AttachmentList attachments={caseAttachments} showEntityOrigin />
               </div>
             </div>
           )}

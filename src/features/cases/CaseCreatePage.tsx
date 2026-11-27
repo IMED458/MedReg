@@ -1,15 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import { z } from 'zod';
-import { Check, ChevronLeft, ChevronRight, Plus, Save, Trash2 } from 'lucide-react';
+import { Building2, Check, ChevronLeft, ChevronRight, Plus, Save, Stethoscope, Trash2 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { dataRepo } from '../../repositories/DataRepository';
 import {
+  CaseDoctorRole,
   CaseParticipant,
   ConfidentialityLevel,
   PriorityLevel,
 } from '../../models/types';
 import { generateUuid, getTbilisiDateISO } from '../../utils/caseLogic';
-import { CustomFieldsSection, SearchableSelect } from '../../components/ui/CommonUI';
+import {
+  CustomFieldsSection,
+  PendingFilePicker,
+  PendingUploadItem,
+  SearchableSelect,
+  uploadAttachmentBatch,
+} from '../../components/ui/CommonUI';
 
 const DRAFT_LOCAL_KEY = 'medreg_new_case_autosave_v1';
 
@@ -43,8 +50,26 @@ interface ParticipantDraft {
   notes: string;
 }
 
+interface DoctorDraft {
+  tempId: string;
+  existingDoctorId?: string;
+  displayName: string;
+  specialty?: string;
+  position?: string;
+  phone?: string;
+  roleInCase: CaseDoctorRole;
+}
+
+const DOC_ROLE_LABELS: Record<CaseDoctorRole, string> = {
+  attending_physician: 'მკურნალი ექიმი',
+  department_head: 'განყოფილების ხელმძღვანელი',
+  explanation_author: 'ახსნა-განმარტების ავტორი',
+  responsible_person: 'პასუხისმგებელი პირი',
+  other: 'სხვა',
+};
+
 const SECTIONS = [
-  { id: 'A', title: 'A. ძირითადი ინფორმაცია' },
+  { id: 'A', title: 'A. ძირითადი, კლინიკა, ექიმი და ფაილები' },
   { id: 'B', title: 'B. საქმის წარმოშობა და eMOH' },
   { id: 'C', title: 'C. განმცხადებელი' },
   { id: 'D', title: 'D. პაციენტი' },
@@ -70,8 +95,32 @@ export const CaseCreatePage: React.FC = () => {
   const [supervisorId, setSupervisorId] = useState('');
   const [linkedCaseIds, setLinkedCaseIds] = useState<string[]>([]);
   const [tagsText, setTagsText] = useState('');
+
+  // Clinic (select existing OR enter new inline)
+  const [orgMode, setOrgMode] = useState<'existing' | 'new'>('existing');
   const [primaryOrganizationId, setPrimaryOrganizationId] = useState('');
   const [primaryBranchName, setPrimaryBranchName] = useState('');
+  const [newOrgName, setNewOrgName] = useState('');
+  const [newOrgTaxId, setNewOrgTaxId] = useState('');
+  const [newOrgMunicipality, setNewOrgMunicipality] = useState('თბილისი');
+  const [newOrgAddress, setNewOrgAddress] = useState('');
+  const [newOrgBranch, setNewOrgBranch] = useState('');
+  const [newOrgDirector, setNewOrgDirector] = useState('');
+  const [newOrgPhone, setNewOrgPhone] = useState('');
+
+  // Doctors (select existing OR enter new inline)
+  const [docMode, setDocMode] = useState<'existing' | 'new'>('existing');
+  const [draftDoctors, setDraftDoctors] = useState<DoctorDraft[]>([]);
+  const [pickDoctorId, setPickDoctorId] = useState('');
+  const [pickDoctorRole, setPickDoctorRole] = useState<CaseDoctorRole>('attending_physician');
+  const [newDocName, setNewDocName] = useState('');
+  const [newDocSpecialty, setNewDocSpecialty] = useState('');
+  const [newDocPosition, setNewDocPosition] = useState('');
+  const [newDocPhone, setNewDocPhone] = useState('');
+  const [newDocRole, setNewDocRole] = useState<CaseDoctorRole>('attending_physician');
+
+  // Initial Files queued during creation
+  const [pendingFiles, setPendingFiles] = useState<PendingUploadItem[]>([]);
 
   // Section B
   const [sourceId, setSourceId] = useState('src_complaint');
@@ -143,6 +192,15 @@ export const CaseCreatePage: React.FC = () => {
       if (d.applicantPhone) setApplicantPhone(d.applicantPhone);
       if (d.applicantEmail) setApplicantEmail(d.applicantEmail);
       if (d.applicantAddress) setApplicantAddress(d.applicantAddress);
+      if (d.orgMode === 'existing' || d.orgMode === 'new') setOrgMode(d.orgMode);
+      if (d.primaryOrganizationId) setPrimaryOrganizationId(d.primaryOrganizationId);
+      if (d.newOrgName) setNewOrgName(d.newOrgName);
+      if (d.newOrgTaxId) setNewOrgTaxId(d.newOrgTaxId);
+      if (d.newOrgMunicipality) setNewOrgMunicipality(d.newOrgMunicipality);
+      if (d.newOrgAddress) setNewOrgAddress(d.newOrgAddress);
+      if (d.newOrgPhone) setNewOrgPhone(d.newOrgPhone);
+      if (d.newOrgDirector) setNewOrgDirector(d.newOrgDirector);
+      if (Array.isArray(d.draftDoctors)) setDraftDoctors(d.draftDoctors);
       if (Array.isArray(d.patients) && d.patients.length > 0) setPatients(d.patients);
     } catch {
       // ignore corrupted autosave
@@ -168,6 +226,15 @@ export const CaseCreatePage: React.FC = () => {
             applicantPhone,
             applicantEmail,
             applicantAddress,
+            orgMode,
+            primaryOrganizationId,
+            newOrgName,
+            newOrgTaxId,
+            newOrgMunicipality,
+            newOrgAddress,
+            newOrgPhone,
+            newOrgDirector,
+            draftDoctors,
             patients,
           })
         );
@@ -189,6 +256,15 @@ export const CaseCreatePage: React.FC = () => {
     applicantPhone,
     applicantEmail,
     applicantAddress,
+    orgMode,
+    primaryOrganizationId,
+    newOrgName,
+    newOrgTaxId,
+    newOrgMunicipality,
+    newOrgAddress,
+    newOrgPhone,
+    newOrgDirector,
+    draftDoctors,
     patients,
   ]);
 
@@ -264,6 +340,30 @@ export const CaseCreatePage: React.FC = () => {
         .map((t) => t.trim())
         .filter(Boolean);
 
+      // Include any doctor currently filled in inputs even if user didn't click "+ სიაში დამატება"
+      const combinedDoctors: DoctorDraft[] = [...draftDoctors];
+      if (docMode === 'existing' && pickDoctorId) {
+        const picked = snapshot.doctors.find((d) => d.id === pickDoctorId);
+        if (picked && !combinedDoctors.some((d) => d.existingDoctorId === picked.id)) {
+          combinedDoctors.push({
+            tempId: generateUuid(),
+            existingDoctorId: picked.id,
+            displayName: picked.fullName,
+            specialty: picked.specialty,
+            roleInCase: pickDoctorRole,
+          });
+        }
+      } else if (docMode === 'new' && newDocName.trim()) {
+        combinedDoctors.push({
+          tempId: generateUuid(),
+          displayName: newDocName.trim(),
+          specialty: newDocSpecialty.trim() || undefined,
+          position: newDocPosition.trim() || undefined,
+          phone: newDocPhone.trim() || undefined,
+          roleInCase: newDocRole,
+        });
+      }
+
       const created = await dataRepo.createOrPublishCase({
         caseData: {
           title: title.trim() || 'მონახაზი ქეისი',
@@ -294,12 +394,36 @@ export const CaseCreatePage: React.FC = () => {
           startedAt: startedAt || getTbilisiDateISO(),
           deadlineDate: deadlineDate || undefined,
           deadlineSourceNote: deadlineSourceNote.trim() || undefined,
-          primaryOrganizationId: primaryOrganizationId || undefined,
-          primaryBranchName: primaryBranchName || undefined,
+          primaryOrganizationId: orgMode === 'existing' ? primaryOrganizationId || undefined : undefined,
+          primaryBranchName: orgMode === 'existing' ? primaryBranchName || undefined : newOrgBranch.trim() || undefined,
           needsReview: 'undecided',
           checklistAnswers: [],
           isDraft: asDraft,
         },
+        inlineOrganization:
+          orgMode === 'new' && newOrgName.trim()
+            ? {
+                legalName: newOrgName.trim(),
+                taxId: newOrgTaxId.trim() || undefined,
+                municipality: newOrgMunicipality.trim() || 'თბილისი',
+                address: newOrgAddress.trim() || undefined,
+                branchName: newOrgBranch.trim() || undefined,
+                directorName: newOrgDirector.trim() || undefined,
+                phone: newOrgPhone.trim() || undefined,
+              }
+            : undefined,
+        doctors: combinedDoctors.map((d) => ({
+          existingDoctorId: d.existingDoctorId,
+          newDoctor: d.existingDoctorId
+            ? undefined
+            : {
+                fullName: d.displayName,
+                specialty: d.specialty,
+                position: d.position,
+                phone: d.phone,
+              },
+          roleInCase: d.roleInCase,
+        })),
         applicant: applicantName.trim()
           ? {
               type: applicantType,
@@ -340,6 +464,16 @@ export const CaseCreatePage: React.FC = () => {
         user: currentUser,
       });
 
+      if (pendingFiles.length > 0) {
+        await uploadAttachmentBatch({
+          items: pendingFiles,
+          caseId: created.id,
+          linkedEntityType: 'case',
+          linkedEntityId: created.id,
+          user: currentUser,
+        });
+      }
+
       localStorage.removeItem(DRAFT_LOCAL_KEY);
       await refreshData();
       notify(
@@ -354,6 +488,50 @@ export const CaseCreatePage: React.FC = () => {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const addExistingDoctorToDraft = () => {
+    if (!pickDoctorId) return;
+    const doc = snapshot.doctors.find((d) => d.id === pickDoctorId);
+    if (!doc) return;
+    if (draftDoctors.some((d) => d.existingDoctorId === doc.id)) {
+      notify('ეს ექიმი უკვე დამატებულია ქეისის სიაში.', 'warning');
+      return;
+    }
+    setDraftDoctors((prev) => [
+      ...prev,
+      {
+        tempId: generateUuid(),
+        existingDoctorId: doc.id,
+        displayName: doc.fullName,
+        specialty: doc.specialty,
+        phone: doc.phone,
+        roleInCase: pickDoctorRole,
+      },
+    ]);
+    setPickDoctorId('');
+  };
+
+  const addNewDoctorToDraft = () => {
+    if (!newDocName.trim()) {
+      notify('მიუთითეთ ექიმის სახელი და გვარი.', 'warning');
+      return;
+    }
+    setDraftDoctors((prev) => [
+      ...prev,
+      {
+        tempId: generateUuid(),
+        displayName: newDocName.trim(),
+        specialty: newDocSpecialty.trim() || undefined,
+        position: newDocPosition.trim() || undefined,
+        phone: newDocPhone.trim() || undefined,
+        roleInCase: newDocRole,
+      },
+    ]);
+    setNewDocName('');
+    setNewDocSpecialty('');
+    setNewDocPosition('');
+    setNewDocPhone('');
   };
 
   const selectedOrg = snapshot.organizations.find((o) => o.id === primaryOrganizationId);
@@ -574,43 +752,300 @@ export const CaseCreatePage: React.FC = () => {
                 </select>
               </div>
 
-              <div>
-                <SearchableSelect
-                  id="case-clinic"
-                  label="ძირითადი კლინიკა / დაწესებულება (სურვილისამებრ)"
-                  value={primaryOrganizationId}
-                  onChange={(val) => {
-                    setPrimaryOrganizationId(val);
-                    setPrimaryBranchName('');
-                  }}
-                  options={snapshot.organizations
-                    .filter((o) => !o.deletedAt)
-                    .map((o) => ({
-                      value: o.id,
-                      label: o.legalName,
-                      sublabel: `${o.municipality} · ს/კ ${o.taxId}`,
-                    }))}
-                  placeholder="აირჩიეთ არსებული კლინიკა..."
-                />
+              {/* Clinic: Select existing OR create new inline */}
+              <div className="md:col-span-2 rounded-xl border border-slate-200 bg-slate-50/70 p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Building2 className="w-4 h-4 text-sky-800" />
+                    <span className="text-xs font-semibold text-slate-900">
+                      კლინიკა / სამედიცინო დაწესებულება
+                    </span>
+                  </div>
+                  <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setOrgMode('existing')}
+                      className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                        orgMode === 'existing' ? 'bg-sky-900 text-white' : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      არსებულიდან არჩევა
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setOrgMode('new')}
+                      className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                        orgMode === 'new' ? 'bg-sky-900 text-white' : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      + ახალი კლინიკის შეყვანა
+                    </button>
+                  </div>
+                </div>
+
+                {orgMode === 'existing' ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <SearchableSelect
+                      id="case-clinic"
+                      label="შენახული კლინიკები"
+                      value={primaryOrganizationId}
+                      onChange={(val) => {
+                        setPrimaryOrganizationId(val);
+                        setPrimaryBranchName('');
+                      }}
+                      options={snapshot.organizations
+                        .filter((o) => !o.deletedAt)
+                        .map((o) => ({
+                          value: o.id,
+                          label: o.legalName,
+                          sublabel: `${o.municipality}${o.taxId ? ` · ს/კ ${o.taxId}` : ''}`,
+                        }))}
+                      placeholder="აირჩიეთ კლინიკა ან გადართეთ ახლის შეყვანაზე..."
+                    />
+                    {selectedOrg && selectedOrg.branches.length > 0 && (
+                      <div>
+                        <label className="block text-xs font-medium text-slate-700 mb-1">ფილიალი</label>
+                        <select
+                          value={primaryBranchName}
+                          onChange={(e) => setPrimaryBranchName(e.target.value)}
+                          className="w-full min-h-[40px] rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                        >
+                          <option value="">ძირითადი მისამართი</option>
+                          {selectedOrg.branches.map((b) => (
+                            <option key={b.id} value={b.name}>
+                              {b.name} — {b.address}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <p className="text-[11px] text-sky-900">
+                      შეყვანილი კლინიკა ავტომატურად შეინახება ცნობარში და შემდეგ ქეისებში სიიდან აირჩევა.
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                      <input
+                        type="text"
+                        placeholder="კლინიკის დასახელება *"
+                        value={newOrgName}
+                        onChange={(e) => setNewOrgName(e.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      />
+                      <input
+                        type="text"
+                        placeholder="საიდენტიფიკაციო კოდი (ს/კ)"
+                        value={newOrgTaxId}
+                        onChange={(e) => setNewOrgTaxId(e.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-mono"
+                      />
+                      <input
+                        type="text"
+                        placeholder="ქალაქი / მუნიციპალიტეტი"
+                        value={newOrgMunicipality}
+                        onChange={(e) => setNewOrgMunicipality(e.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      />
+                      <input
+                        type="text"
+                        placeholder="მისამართი"
+                        value={newOrgAddress}
+                        onChange={(e) => setNewOrgAddress(e.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      />
+                      <input
+                        type="text"
+                        placeholder="ფილიალი (არასავალდებულო)"
+                        value={newOrgBranch}
+                        onChange={(e) => setNewOrgBranch(e.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      />
+                      <input
+                        type="text"
+                        placeholder="დირექტორი / საკონტაქტო პირი"
+                        value={newOrgDirector}
+                        onChange={(e) => setNewOrgDirector(e.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      />
+                      <input
+                        type="tel"
+                        placeholder="კლინიკის ტელეფონი"
+                        value={newOrgPhone}
+                        onChange={(e) => setNewOrgPhone(e.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
-              {selectedOrg && selectedOrg.branches.length > 0 && (
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">ფილიალი</label>
-                  <select
-                    value={primaryBranchName}
-                    onChange={(e) => setPrimaryBranchName(e.target.value)}
-                    className="w-full min-h-[40px] rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-                  >
-                    <option value="">ძირითადი მისამართი</option>
-                    {selectedOrg.branches.map((b) => (
-                      <option key={b.id} value={b.name}>
-                        {b.name} — {b.address}
-                      </option>
-                    ))}
-                  </select>
+              {/* Doctors: Select existing OR enter new inline */}
+              <div className="md:col-span-2 rounded-xl border border-slate-200 bg-slate-50/70 p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Stethoscope className="w-4 h-4 text-teal-700" />
+                    <span className="text-xs font-semibold text-slate-900">
+                      საქმეში მონაწილე ექიმ(ებ)ი
+                    </span>
+                  </div>
+                  <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setDocMode('existing')}
+                      className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                        docMode === 'existing' ? 'bg-sky-900 text-white' : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      არსებული ექიმი
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDocMode('new')}
+                      className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                        docMode === 'new' ? 'bg-sky-900 text-white' : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      + ახალი ექიმის შეყვანა
+                    </button>
+                  </div>
                 </div>
-              )}
+
+                {draftDoctors.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {draftDoctors.map((d) => (
+                      <div
+                        key={d.tempId}
+                        className="inline-flex items-center gap-2 rounded-lg border border-teal-200 bg-white px-2.5 py-1.5 text-xs"
+                      >
+                        <strong className="text-slate-900">{d.displayName}</strong>
+                        {d.specialty && <span className="text-slate-500">({d.specialty})</span>}
+                        <span className="text-sky-800 font-medium">{DOC_ROLE_LABELS[d.roleInCase]}</span>
+                        <button
+                          type="button"
+                          onClick={() => setDraftDoctors((prev) => prev.filter((x) => x.tempId !== d.tempId))}
+                          className="text-rose-700 hover:underline"
+                          aria-label={`ექიმის მოხსნა: ${d.displayName}`}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {docMode === 'existing' ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end">
+                    <div className="sm:col-span-6">
+                      <SearchableSelect
+                        id="case-doctor-select"
+                        label="შენახული ექიმები"
+                        value={pickDoctorId}
+                        onChange={setPickDoctorId}
+                        options={snapshot.doctors
+                          .filter((d) => !d.deletedAt)
+                          .map((d) => ({
+                            value: d.id,
+                            label: d.fullName,
+                            sublabel: d.specialty,
+                          }))}
+                        placeholder="აირჩიეთ ექიმი ან გადართეთ ახალზე..."
+                      />
+                    </div>
+                    <div className="sm:col-span-4">
+                      <label className="block text-xs font-medium text-slate-700 mb-1">როლი საქმეში</label>
+                      <select
+                        value={pickDoctorRole}
+                        onChange={(e) => setPickDoctorRole(e.target.value as CaseDoctorRole)}
+                        className="w-full min-h-[40px] rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      >
+                        {Object.entries(DOC_ROLE_LABELS).map(([k, lbl]) => (
+                          <option key={k} value={k}>
+                            {lbl}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <button
+                        type="button"
+                        disabled={!pickDoctorId}
+                        onClick={addExistingDoctorToDraft}
+                        className="w-full min-h-[40px] rounded-lg border border-sky-300 bg-white px-3 py-2 text-xs font-medium text-sky-900 hover:bg-sky-50 disabled:opacity-40"
+                      >
+                        + დამატება
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    <p className="text-[11px] text-sky-900">
+                      ახალი ექიმი ავტომატურად შეინახება ცნობარში და დაუკავშირდება ამ ქეისს.
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                      <input
+                        type="text"
+                        placeholder="ექიმის სახელი და გვარი *"
+                        value={newDocName}
+                        onChange={(e) => setNewDocName(e.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      />
+                      <input
+                        type="text"
+                        placeholder="სპეციალობა (მაგ: ქირურგი)"
+                        value={newDocSpecialty}
+                        onChange={(e) => setNewDocSpecialty(e.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      />
+                      <input
+                        type="text"
+                        placeholder="პოზიცია / განყოფილება"
+                        value={newDocPosition}
+                        onChange={(e) => setNewDocPosition(e.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      />
+                      <input
+                        type="tel"
+                        placeholder="ტელეფონი"
+                        value={newDocPhone}
+                        onChange={(e) => setNewDocPhone(e.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      />
+                      <select
+                        value={newDocRole}
+                        onChange={(e) => setNewDocRole(e.target.value as CaseDoctorRole)}
+                        className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm"
+                      >
+                        {Object.entries(DOC_ROLE_LABELS).map(([k, lbl]) => (
+                          <option key={k} value={k}>
+                            {lbl}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={addNewDoctorToDraft}
+                        className="min-h-[36px] inline-flex items-center gap-1 rounded-lg border border-sky-300 bg-white px-3 py-1.5 text-xs font-medium text-sky-900 hover:bg-sky-50"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        კიდევ ერთი ექიმის დამატება სიაში
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Initial Files Upload right during Case Creation */}
+              <div className="md:col-span-2">
+                <PendingFilePicker
+                  items={pendingFiles}
+                  onChange={setPendingFiles}
+                  defaultCategory="საჩივარი / საწყისი დოკუმენტი"
+                  label="ქეისის საწყისი დოკუმენტები და ფაილები (ატვირთვა რეგისტრაციისთანავე)"
+                />
+              </div>
 
               <div className="md:col-span-2">
                 <label className="block text-xs font-medium text-slate-700 mb-1">

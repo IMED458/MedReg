@@ -12,6 +12,7 @@ import {
   PriorityLevel,
   ReviewAssignment,
   ReviewAssignmentStatus,
+  Reviewer,
   Task,
 } from '../../../models/types';
 import {
@@ -24,8 +25,11 @@ import {
   AttachmentList,
   FieldCommentButton,
   FileUploader,
+  PendingFilePicker,
+  PendingUploadItem,
   StatusLabel,
   UrgencyChip,
+  uploadAttachmentBatch,
 } from '../../../components/ui/CommonUI';
 
 const DOC_STATUS_LABELS: Record<DocumentRequestStatus, { label: string; tone: 'slate' | 'sky' | 'amber' | 'emerald' | 'rose' }> = {
@@ -71,6 +75,7 @@ export const CaseDocumentsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medic
   const [letterDate, setLetterDate] = useState(getTbilisiDateISO());
   const [dueDate, setDueDate] = useState('');
   const [status, setStatus] = useState<DocumentRequestStatus>('requested');
+  const [reqPendingFiles, setReqPendingFiles] = useState<PendingUploadItem[]>([]);
 
   const [deliveryReqId, setDeliveryReqId] = useState<string | null>(null);
   const [delivDate, setDelivDate] = useState(getTbilisiDateISO());
@@ -79,6 +84,7 @@ export const CaseDocumentsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medic
   const [delivPages, setDelivPages] = useState('');
   const [delivMissing, setDelivMissing] = useState('');
   const [delivNextStatus, setDelivNextStatus] = useState<DocumentRequestStatus>('fully_received');
+  const [delivPendingFiles, setDelivPendingFiles] = useState<PendingUploadItem[]>([]);
 
   if (!snapshot || !currentUser) return null;
   const editable = can('edit');
@@ -89,8 +95,18 @@ export const CaseDocumentsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medic
     e.preventDefault();
     if (!docTitle.trim()) return;
     const now = new Date().toISOString();
+    const reqId = generateUuid();
+    if (reqPendingFiles.length > 0) {
+      await uploadAttachmentBatch({
+        items: reqPendingFiles,
+        caseId: medicalCase.id,
+        linkedEntityType: 'document_request',
+        linkedEntityId: reqId,
+        user: currentUser,
+      });
+    }
     const req: DocumentRequest = {
-      id: generateUuid(),
+      id: reqId,
       caseId: medicalCase.id,
       documentTypeId: docTypeId,
       documentTitle: docTitle.trim(),
@@ -112,15 +128,26 @@ export const CaseDocumentsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medic
     await dataRepo.saveDocumentRequest(req, currentUser);
     setDocTitle('');
     setLetterNum('');
+    setReqPendingFiles([]);
     setShowAdd(false);
     await refreshData();
-    notify('დოკუმენტის მოთხოვნა დაემატა.', 'success');
+    notify('დოკუმენტის მოთხოვნა და ფაილები შენახულია.', 'success');
   };
 
   const handleAddDelivery = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!deliveryReqId) return;
     const now = new Date().toISOString();
+    const uploadedDelivFiles =
+      delivPendingFiles.length > 0
+        ? await uploadAttachmentBatch({
+            items: delivPendingFiles,
+            caseId: medicalCase.id,
+            linkedEntityType: 'document_request',
+            linkedEntityId: deliveryReqId,
+            user: currentUser,
+          })
+        : [];
     await dataRepo.addDocumentDelivery(
       deliveryReqId,
       {
@@ -133,7 +160,7 @@ export const CaseDocumentsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medic
         copyOrOriginal: delivForm,
         pageCount: delivPages ? Number(delivPages) : undefined,
         stillMissing: delivMissing.trim() || undefined,
-        attachmentIds: [],
+        attachmentIds: uploadedDelivFiles.map((a) => a.id),
         createdAt: now,
         updatedAt: now,
         createdBy: currentUser.id,
@@ -145,8 +172,9 @@ export const CaseDocumentsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medic
     setDeliveryReqId(null);
     setDelivMissing('');
     setDelivLetterNum('');
+    setDelivPendingFiles([]);
     await refreshData();
-    notify('მიწოდება დაფიქსირდა.', 'success');
+    notify('მიწოდება და მიმაგრებული ფაილები შენახულია.', 'success');
   };
 
   const updateStatusQuick = async (req: DocumentRequest, nextStatus: DocumentRequestStatus) => {
@@ -253,7 +281,16 @@ export const CaseDocumentsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medic
               </option>
             ))}
           </select>
-          <div className="flex justify-end gap-2">
+          <div className="sm:col-span-2 lg:col-span-3">
+            <PendingFilePicker
+              compact
+              items={reqPendingFiles}
+              onChange={setReqPendingFiles}
+              defaultCategory="გამოთხოვილი დოკუმენტი"
+              label="თანდართული ფაილი (სურვილისამებრ)"
+            />
+          </div>
+          <div className="sm:col-span-2 lg:col-span-3 flex justify-end gap-2">
             <button type="button" onClick={() => setShowAdd(false)} className="px-3 py-2 text-xs text-slate-600">
               გაუქმება
             </button>
@@ -396,26 +433,41 @@ export const CaseDocumentsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medic
                       <option value="partially_received">ნაწილობრივ მიღებულია</option>
                       <option value="defective">ხარვეზიანია</option>
                     </select>
-                    <div className="sm:col-span-3 flex justify-end gap-2">
-                      <button type="button" onClick={() => setDeliveryReqId(null)} className="px-2.5 py-1 text-slate-600">
-                        გაუქმება
-                      </button>
-                      <button type="submit" className="px-3 py-1 bg-sky-800 text-white rounded font-medium">
-                        მიწოდების შენახვა
-                      </button>
-                    </div>
-                  </form>
+                      <div className="sm:col-span-3">
+                        <PendingFilePicker
+                          compact
+                          items={delivPendingFiles}
+                          onChange={setDelivPendingFiles}
+                          defaultCategory="მოწოდებული დოკუმენტი"
+                          label="მოწოდებული ფაილის მიმაგრება"
+                        />
+                      </div>
+                      <div className="sm:col-span-3 flex justify-end gap-2">
+                        <button type="button" onClick={() => setDeliveryReqId(null)} className="px-2.5 py-1 text-slate-600">
+                          გაუქმება
+                        </button>
+                        <button type="submit" className="px-3 py-1 bg-sky-800 text-white rounded font-medium">
+                          მიწოდების შენახვა
+                        </button>
+                      </div>
+                    </form>
                 )}
 
-                {editable && (
-                  <details>
-                    <summary className="cursor-pointer text-sky-800 font-medium">მიღებული ფაილები ({reqAttachments.length})</summary>
-                    <div className="mt-2 space-y-2">
-                      <FileUploader caseId={medicalCase.id} linkedEntityType="document_request" linkedEntityId={r.id} defaultCategory="გამოთხოვილი დოკუმენტი" />
-                      <AttachmentList attachments={reqAttachments} />
-                    </div>
-                  </details>
-                )}
+                <div className="pt-2 border-t border-slate-100 space-y-2">
+                  <span className="text-[11px] font-semibold text-slate-700 block">
+                    მიღებული ფაილები ({reqAttachments.length})
+                  </span>
+                  {editable && (
+                    <FileUploader
+                      compact
+                      caseId={medicalCase.id}
+                      linkedEntityType="document_request"
+                      linkedEntityId={r.id}
+                      defaultCategory="გამოთხოვილი დოკუმენტი"
+                    />
+                  )}
+                  {reqAttachments.length > 0 && <AttachmentList attachments={reqAttachments} />}
+                </div>
               </div>
             );
           })}
@@ -446,6 +498,7 @@ export const CaseCorrespondenceTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
   const [editNum, setEditNum] = useState('');
   const [editDate, setEditDate] = useState('');
   const [editStatus, setEditStatus] = useState<CorrespondenceStatus>('to_prepare');
+  const [letterPendingFiles, setLetterPendingFiles] = useState<PendingUploadItem[]>([]);
 
   if (!snapshot || !currentUser) return null;
   const editable = can('edit');
@@ -455,8 +508,19 @@ export const CaseCorrespondenceTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
     e.preventDefault();
     if (!subject.trim()) return;
     const now = new Date().toISOString();
+    const letterId = generateUuid();
+    const uploadedLetterFiles =
+      letterPendingFiles.length > 0
+        ? await uploadAttachmentBatch({
+            items: letterPendingFiles,
+            caseId: medicalCase.id,
+            linkedEntityType: 'correspondence',
+            linkedEntityId: letterId,
+            user: currentUser,
+          })
+        : [];
     const letter: Correspondence = {
-      id: generateUuid(),
+      id: letterId,
       caseIds: [medicalCase.id],
       direction,
       categoryId,
@@ -474,7 +538,7 @@ export const CaseCorrespondenceTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
       sentDate: interimSent ? officialDate || getTbilisiDateISO() : undefined,
       expectedReplyDate: expectedReplyDate || undefined,
       responsibleUserId: currentUser.id,
-      attachmentIds: [],
+      attachmentIds: uploadedLetterFiles.map((a) => a.id),
       createdAt: now,
       updatedAt: now,
       createdBy: currentUser.id,
@@ -484,9 +548,10 @@ export const CaseCorrespondenceTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
     setSubject('');
     setOfficialNumber('');
     setShortContent('');
+    setLetterPendingFiles([]);
     setShowAdd(false);
     await refreshData();
-    notify('წერილი დარეგისტრირდა.', 'success');
+    notify('წერილი და მიმაგრებული ფაილები შენახულია.', 'success');
   };
 
   const toggleInterimStep = async (
@@ -630,6 +695,13 @@ export const CaseCorrespondenceTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
               </>
             )}
           </div>
+          <PendingFilePicker
+            compact
+            items={letterPendingFiles}
+            onChange={setLetterPendingFiles}
+            defaultCategory="კორესპონდენცია / წერილი"
+            label="წერილის სკანის / ფაილის მიმაგრება"
+          />
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setShowAdd(false)} className="px-3 py-1.5 text-xs text-slate-600">
               გაუქმება
@@ -647,6 +719,9 @@ export const CaseCorrespondenceTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
         <div className="space-y-2.5">
           {letters.map((l) => {
             const catLabel = snapshot.settings.correspondenceCategories.find((c) => c.id === l.categoryId)?.label || l.categoryId;
+            const letterFiles = snapshot.attachments.filter(
+              (a) => !a.deletedAt && a.linkedEntityType === 'correspondence' && a.linkedEntityId === l.id
+            );
             return (
               <div key={l.id} className="rounded-xl border border-slate-200 bg-white p-3.5 text-xs space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -767,6 +842,18 @@ export const CaseCorrespondenceTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
                     </label>
                   </div>
                 )}
+                <div className="pt-2 border-t border-slate-100 space-y-2">
+                  {editable && (
+                    <FileUploader
+                      compact
+                      caseId={medicalCase.id}
+                      linkedEntityType="correspondence"
+                      linkedEntityId={l.id}
+                      defaultCategory="კორესპონდენცია / წერილი"
+                    />
+                  )}
+                  {letterFiles.length > 0 && <AttachmentList attachments={letterFiles} />}
+                </div>
               </div>
             );
           })}
@@ -779,13 +866,19 @@ export const CaseCorrespondenceTab: React.FC<{ medicalCase: MedicalCase }> = ({ 
 export const CaseReviewsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medicalCase }) => {
   const { snapshot, currentUser, refreshData, notify, can } = useApp();
   const [showSend, setShowSend] = useState(false);
+  const [revMode, setRevMode] = useState<'existing' | 'new'>('existing');
   const [reviewerId, setReviewerId] = useState('');
+  const [newRevName, setNewRevName] = useState('');
+  const [newRevSpecialty, setNewRevSpecialty] = useState('');
+  const [newRevOrg, setNewRevOrg] = useState('');
+  const [newRevPhone, setNewRevPhone] = useState('');
   const [basis, setBasis] = useState('');
   const [questions, setQuestions] = useState('');
   const [materials, setMaterials] = useState('');
   const [outLetterNum, setOutLetterNum] = useState('');
   const [outLetterDate, setOutLetterDate] = useState(getTbilisiDateISO());
   const [dueDate, setDueDate] = useState('');
+  const [revSendPendingFiles, setRevSendPendingFiles] = useState<PendingUploadItem[]>([]);
 
   const [respondingId, setRespondingId] = useState<string | null>(null);
   const [respDate, setRespDate] = useState(getTbilisiDateISO());
@@ -793,6 +886,7 @@ export const CaseReviewsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medical
   const [respAuthor, setRespAuthor] = useState('');
   const [respSummary, setRespSummary] = useState('');
   const [respNextStatus, setRespNextStatus] = useState<ReviewAssignmentStatus>('response_received');
+  const [revRespPendingFiles, setRevRespPendingFiles] = useState<PendingUploadItem[]>([]);
 
   if (!snapshot || !currentUser) return null;
   const editable = can('edit');
@@ -805,18 +899,52 @@ export const CaseReviewsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medical
 
   const handleSendReview = async (e: React.FormEvent) => {
     e.preventDefault();
-    const rev = snapshot.reviewers.find((r) => r.id === reviewerId);
-    if (!rev) return;
     const now = new Date().toISOString();
+    let rev = snapshot.reviewers.find((r) => r.id === reviewerId);
+
+    if (revMode === 'new') {
+      if (!newRevName.trim()) {
+        notify('მიუთითეთ რეცენზენტის სახელი და გვარი.', 'warning');
+        return;
+      }
+      const createdRev: Reviewer = {
+        id: generateUuid(),
+        fullName: newRevName.trim(),
+        specialty: newRevSpecialty.trim() || 'ექსპერტ-რეცენზენტი',
+        organization: newRevOrg.trim() || 'დამოუკიდებელი ექსპერტი',
+        position: 'ექსპერტ-რეცენზენტი',
+        phone: newRevPhone.trim() || undefined,
+        createdAt: now,
+        updatedAt: now,
+        createdBy: currentUser.id,
+        updatedBy: currentUser.id,
+      };
+      await dataRepo.saveReviewer(createdRev, currentUser);
+      rev = createdRev;
+    }
+
+    if (!rev) return;
+    const assignId = generateUuid();
+    const uploadedSendFiles =
+      revSendPendingFiles.length > 0
+        ? await uploadAttachmentBatch({
+            items: revSendPendingFiles,
+            caseId: medicalCase.id,
+            linkedEntityType: 'review_assignment',
+            linkedEntityId: assignId,
+            user: currentUser,
+          })
+        : [];
+
     const assign: ReviewAssignment = {
-      id: generateUuid(),
+      id: assignId,
       caseId: medicalCase.id,
       reviewerId: rev.id,
       reviewerNameSnapshot: rev.fullName,
       basis: basis.trim(),
       questionsToAnswer: questions.trim(),
       materialsList: materials.trim(),
-      attachedDocumentIds: [],
+      attachedDocumentIds: uploadedSendFiles.map((a) => a.id),
       outgoingLetterNumber: outLetterNum.trim() || undefined,
       outgoingLetterDate: outLetterDate || undefined,
       sentDate: outLetterDate || undefined,
@@ -833,11 +961,17 @@ export const CaseReviewsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medical
       await dataRepo.updateCaseFields(medicalCase.id, { needsReview: 'yes' }, currentUser, 'საჭიროა რეცენზია?');
     }
     setReviewerId('');
+    setNewRevName('');
+    setNewRevSpecialty('');
+    setNewRevOrg('');
+    setNewRevPhone('');
+    setRevMode('existing');
     setOutLetterNum('');
     setQuestions('');
+    setRevSendPendingFiles([]);
     setShowSend(false);
     await refreshData();
-    notify('რეცენზიაზე გაგზავნა დაფიქსირდა.', 'success');
+    notify('რეცენზიაზე გაგზავნა და ფაილები შენახულია.', 'success');
   };
 
   const handleAddResponse = async (e: React.FormEvent) => {
@@ -845,6 +979,16 @@ export const CaseReviewsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medical
     const assign = assignments.find((a) => a.id === respondingId);
     if (!assign || !respSummary.trim()) return;
     const now = new Date().toISOString();
+    const uploadedRespFiles =
+      revRespPendingFiles.length > 0
+        ? await uploadAttachmentBatch({
+            items: revRespPendingFiles,
+            caseId: medicalCase.id,
+            linkedEntityType: 'review_assignment',
+            linkedEntityId: assign.id,
+            user: currentUser,
+          })
+        : [];
     await dataRepo.addReviewResponse(
       assign.id,
       {
@@ -857,7 +1001,7 @@ export const CaseReviewsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medical
         incomingLetterDate: respDate,
         authorName: respAuthor.trim() || assign.reviewerNameSnapshot,
         shortSummary: respSummary.trim(),
-        attachmentIds: [],
+        attachmentIds: uploadedRespFiles.map((a) => a.id),
         createdAt: now,
         updatedAt: now,
         createdBy: currentUser.id,
@@ -869,8 +1013,9 @@ export const CaseReviewsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medical
     setRespondingId(null);
     setRespLetterNum('');
     setRespSummary('');
+    setRevRespPendingFiles([]);
     await refreshData();
-    notify('რეცენზიის პასუხი შენახულია.', 'success');
+    notify('რეცენზიის პასუხი და ფაილები შენახულია.', 'success');
   };
 
   return (
@@ -903,25 +1048,85 @@ export const CaseReviewsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medical
 
       {showSend && (
         <form onSubmit={handleSendReview} className="rounded-xl border border-sky-200 bg-white p-4 space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">რეცენზენტი *</label>
-              <select
-                required
-                value={reviewerId}
-                onChange={(e) => setReviewerId(e.target.value)}
-                className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm"
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-slate-900">რეცენზენტის მითითება</span>
+            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setRevMode('existing')}
+                className={`px-2.5 py-1 rounded-md font-medium ${
+                  revMode === 'existing' ? 'bg-sky-900 text-white' : 'text-slate-600'
+                }`}
               >
-                <option value="">აირჩიეთ რეცენზენტი...</option>
-                {snapshot.reviewers
-                  .filter((r) => !r.deletedAt)
-                  .map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.fullName} ({r.specialty})
-                    </option>
-                  ))}
-              </select>
+                ცნობარიდან არჩევა
+              </button>
+              <button
+                type="button"
+                onClick={() => setRevMode('new')}
+                className={`px-2.5 py-1 rounded-md font-medium ${
+                  revMode === 'new' ? 'bg-sky-900 text-white' : 'text-slate-600'
+                }`}
+              >
+                + ახალი რეცენზენტი
+              </button>
             </div>
+          </div>
+
+          {revMode === 'new' && (
+            <div className="rounded-lg border border-sky-200 bg-sky-50/40 p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+              <input
+                type="text"
+                required
+                placeholder="რეცენზენტის სახელი და გვარი *"
+                value={newRevName}
+                onChange={(e) => setNewRevName(e.target.value)}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              />
+              <input
+                type="text"
+                placeholder="სპეციალობა"
+                value={newRevSpecialty}
+                onChange={(e) => setNewRevSpecialty(e.target.value)}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              />
+              <input
+                type="text"
+                placeholder="დაწესებულება / კოლეგია"
+                value={newRevOrg}
+                onChange={(e) => setNewRevOrg(e.target.value)}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              />
+              <input
+                type="tel"
+                placeholder="ტელეფონი"
+                value={newRevPhone}
+                onChange={(e) => setNewRevPhone(e.target.value)}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              />
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {revMode === 'existing' && (
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">რეცენზენტი *</label>
+                <select
+                  required
+                  value={reviewerId}
+                  onChange={(e) => setReviewerId(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm"
+                >
+                  <option value="">აირჩიეთ რეცენზენტი...</option>
+                  {snapshot.reviewers
+                    .filter((r) => !r.deletedAt)
+                    .map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.fullName} ({r.specialty})
+                      </option>
+                    ))}
+                </select>
+              </div>
+            )}
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">გასული წერილის №</label>
               <input
@@ -970,6 +1175,13 @@ export const CaseReviewsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medical
             value={questions}
             onChange={(e) => setQuestions(e.target.value)}
             className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+          />
+          <PendingFilePicker
+            compact
+            items={revSendPendingFiles}
+            onChange={setRevSendPendingFiles}
+            defaultCategory="რეცენზიაზე გაგზავნილი მასალა"
+            label="გასაგზავნი წერილის / მასალების ფაილის მიმაგრება"
           />
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setShowSend(false)} className="px-3 py-1.5 text-xs text-slate-600">
@@ -1089,6 +1301,13 @@ export const CaseReviewsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medical
                       onChange={(e) => setRespSummary(e.target.value)}
                       className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
                     />
+                    <PendingFilePicker
+                      compact
+                      items={revRespPendingFiles}
+                      onChange={setRevRespPendingFiles}
+                      defaultCategory="მიღებული რეცენზია"
+                      label="რეცენზიის დასკვნის ფაილის მიმაგრება"
+                    />
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <select
                         value={respNextStatus}
@@ -1112,15 +1331,21 @@ export const CaseReviewsTab: React.FC<{ medicalCase: MedicalCase }> = ({ medical
                   </form>
                 )}
 
-                {editable && (
-                  <details>
-                    <summary className="cursor-pointer text-sky-800 font-medium">რეცენზიის ფაილები ({revFiles.length})</summary>
-                    <div className="mt-2 space-y-2">
-                      <FileUploader caseId={medicalCase.id} linkedEntityType="review_assignment" linkedEntityId={a.id} defaultCategory="რეცენზია" />
-                      <AttachmentList attachments={revFiles} />
-                    </div>
-                  </details>
-                )}
+                <div className="pt-2 border-t border-slate-100 space-y-2">
+                  <span className="text-[11px] font-semibold text-slate-700 block">
+                    რეცენზიის ფაილები ({revFiles.length})
+                  </span>
+                  {editable && (
+                    <FileUploader
+                      compact
+                      caseId={medicalCase.id}
+                      linkedEntityType="review_assignment"
+                      linkedEntityId={a.id}
+                      defaultCategory="რეცენზია"
+                    />
+                  )}
+                  {revFiles.length > 0 && <AttachmentList attachments={revFiles} />}
+                </div>
               </div>
             );
           })}

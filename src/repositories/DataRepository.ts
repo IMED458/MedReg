@@ -11,6 +11,7 @@ import {
   CaseComment,
   CaseCommission,
   CaseDoctor,
+  CaseDoctorRole,
   CaseLink,
   CaseOrganizationLink,
   CaseParticipant,
@@ -36,7 +37,14 @@ import {
   User,
   Visit,
 } from '../models/types';
-import { formatCaseNumber, generateUuid, getNextSequenceForYear, getTbilisiDateISO } from '../utils/caseLogic';
+import {
+  findMatchingDoctor,
+  findMatchingOrganization,
+  formatCaseNumber,
+  generateUuid,
+  getNextSequenceForYear,
+  getTbilisiDateISO,
+} from '../utils/caseLogic';
 
 export interface WorkspaceSnapshot {
   users: User[];
@@ -198,6 +206,29 @@ export class DexieRepository {
       MedicalCase,
       'id' | 'caseNumber' | 'sequenceYear' | 'sequenceNumber' | 'createdAt' | 'updatedAt' | 'createdBy' | 'updatedBy' | 'lastActivityAt'
     >;
+    inlineOrganization?: {
+      legalName: string;
+      taxId?: string;
+      municipality?: string;
+      address?: string;
+      branchName?: string;
+      phone?: string;
+      email?: string;
+      directorName?: string;
+      adminResponsible?: string;
+    };
+    doctors?: Array<{
+      existingDoctorId?: string;
+      newDoctor?: {
+        fullName: string;
+        specialty?: string;
+        position?: string;
+        phone?: string;
+        email?: string;
+      };
+      roleInCase: CaseDoctorRole;
+      nextAction?: string;
+    }>;
     applicant?: Omit<Applicant, 'id' | 'caseId' | 'createdAt' | 'updatedAt' | 'createdBy' | 'updatedBy'>;
     patients: Array<Omit<Patient, 'id' | 'caseId' | 'createdAt' | 'updatedAt' | 'createdBy' | 'updatedBy'>>;
     participants: Array<Omit<CaseParticipant, 'id' | 'caseId' | 'createdAt' | 'updatedAt' | 'createdBy' | 'updatedBy'>>;
@@ -205,10 +236,10 @@ export class DexieRepository {
     user: SafeUser;
   }): Promise<MedicalCase> {
     const now = new Date().toISOString();
-    const { draftId, caseData, applicant, patients, participants, customValues, user } = params;
+    const { draftId, caseData, inlineOrganization, doctors, applicant, patients, participants, customValues, user } = params;
     const year = Number((caseData.startedAt || getTbilisiDateISO()).slice(0, 4)) || new Date().getFullYear();
 
-    let caseId = draftId || generateUuid();
+    const caseId = draftId || generateUuid();
     let allocated = await this.allocateNextCaseNumber(year);
 
     if (draftId) {
@@ -238,14 +269,84 @@ export class DexieRepository {
 
     await db.transaction(
       'rw',
-      [db.cases, db.applicants, db.patients, db.case_participants, db.custom_field_values, db.activity_logs, db.case_organizations],
+      [
+        db.cases,
+        db.applicants,
+        db.patients,
+        db.case_participants,
+        db.custom_field_values,
+        db.activity_logs,
+        db.organizations,
+        db.case_organizations,
+        db.doctors,
+        db.case_doctors,
+      ],
       async () => {
+        // 1. Resolve or auto-create inline clinic/organization
+        let resolvedOrgId = caseData.primaryOrganizationId || '';
+        const resolvedBranchName = (caseData.primaryBranchName || inlineOrganization?.branchName || '').trim() || undefined;
+
+        if (!resolvedOrgId && inlineOrganization && inlineOrganization.legalName.trim()) {
+          const allOrgs = await db.organizations.toArray();
+          const matchedOrg = findMatchingOrganization(allOrgs, {
+            legalName: inlineOrganization.legalName,
+            taxId: inlineOrganization.taxId,
+          });
+          if (matchedOrg) {
+            resolvedOrgId = matchedOrg.id;
+          } else {
+            resolvedOrgId = generateUuid();
+            const newOrg: Organization = {
+              id: resolvedOrgId,
+              legalName: inlineOrganization.legalName.trim(),
+              taxId: (inlineOrganization.taxId || '').trim(),
+              address: (inlineOrganization.address || '').trim(),
+              municipality: (inlineOrganization.municipality || 'თბილისი').trim(),
+              phone: inlineOrganization.phone?.trim() || undefined,
+              email: inlineOrganization.email?.trim() || undefined,
+              directorName: inlineOrganization.directorName?.trim() || undefined,
+              adminResponsible: inlineOrganization.adminResponsible?.trim() || undefined,
+              branches: resolvedBranchName
+                ? [
+                    {
+                      id: generateUuid(),
+                      name: resolvedBranchName,
+                      address: (inlineOrganization.address || '').trim(),
+                      municipality: (inlineOrganization.municipality || 'თბილისი').trim(),
+                      isPrimary: true,
+                    },
+                  ]
+                : [],
+              contacts: [],
+              createdAt: now,
+              updatedAt: now,
+              createdBy: user.id,
+              updatedBy: user.id,
+            };
+            await db.organizations.put(newOrg);
+            await db.activity_logs.put({
+              id: generateUuid(),
+              caseId,
+              entityType: 'organization',
+              entityId: newOrg.id,
+              action: 'create',
+              summary: `ქეისის რეგისტრაციისას ავტომატურად დაემატა კლინიკა: ${newOrg.legalName}`,
+              performedBy: user.id,
+              performedByName: user.fullName,
+              performedAt: now,
+            });
+          }
+        }
+
+        newCase.primaryOrganizationId = resolvedOrgId || undefined;
+        newCase.primaryBranchName = resolvedBranchName;
         await db.cases.put(newCase);
 
         if (draftId) {
           await db.applicants.where('caseId').equals(draftId).delete();
           await db.patients.where('caseId').equals(draftId).delete();
           await db.case_participants.where('caseId').equals(draftId).delete();
+          await db.case_doctors.where('caseId').equals(draftId).delete();
         }
 
         let createdApplicantId: string | undefined;
@@ -289,15 +390,16 @@ export class DexieRepository {
           });
         }
 
-        if (caseData.primaryOrganizationId) {
+        if (resolvedOrgId) {
           const existingLinks = await db.case_organizations.where('caseId').equals(caseId).toArray();
-          if (existingLinks.length === 0) {
-            const org = await db.organizations.get(caseData.primaryOrganizationId);
+          const alreadyLinked = existingLinks.some((l) => !l.deletedAt && l.organizationId === resolvedOrgId);
+          if (!alreadyLinked) {
+            const org = await db.organizations.get(resolvedOrgId);
             await db.case_organizations.put({
               id: generateUuid(),
               caseId,
-              organizationId: caseData.primaryOrganizationId,
-              branchName: caseData.primaryBranchName,
+              organizationId: resolvedOrgId,
+              branchName: resolvedBranchName,
               snapshotAddress: org?.address,
               responsibleContactName: org?.adminResponsible || org?.directorName,
               responsibleContactPhone: org?.phone,
@@ -307,6 +409,77 @@ export class DexieRepository {
               createdBy: user.id,
               updatedBy: user.id,
             });
+          }
+        }
+
+        // 2. Resolve or auto-create doctors & link to case
+        if (doctors && doctors.length > 0) {
+          const allDoctors = await db.doctors.toArray();
+          const linkedDoctorIds = new Set<string>();
+          for (const dEntry of doctors) {
+            let resolvedDoc: Doctor | undefined;
+            if (dEntry.existingDoctorId) {
+              resolvedDoc = allDoctors.find((d) => d.id === dEntry.existingDoctorId && !d.deletedAt);
+            } else if (dEntry.newDoctor && dEntry.newDoctor.fullName.trim()) {
+              resolvedDoc = findMatchingDoctor(allDoctors, dEntry.newDoctor.fullName);
+              if (resolvedDoc) {
+                if (resolvedOrgId && !resolvedDoc.organizationIds.includes(resolvedOrgId)) {
+                  resolvedDoc = {
+                    ...resolvedDoc,
+                    organizationIds: [...resolvedDoc.organizationIds, resolvedOrgId],
+                    updatedAt: now,
+                    updatedBy: user.id,
+                  };
+                  await db.doctors.put(resolvedDoc);
+                }
+              } else {
+                const createdDoc: Doctor = {
+                  id: generateUuid(),
+                  fullName: dEntry.newDoctor.fullName.trim(),
+                  specialty: dEntry.newDoctor.specialty?.trim() || 'ექიმი',
+                  position: dEntry.newDoctor.position?.trim() || 'ექიმი',
+                  phone: dEntry.newDoctor.phone?.trim() || undefined,
+                  email: dEntry.newDoctor.email?.trim() || undefined,
+                  organizationIds: resolvedOrgId ? [resolvedOrgId] : [],
+                  createdAt: now,
+                  updatedAt: now,
+                  createdBy: user.id,
+                  updatedBy: user.id,
+                };
+                await db.doctors.put(createdDoc);
+                allDoctors.push(createdDoc);
+                resolvedDoc = createdDoc;
+                await db.activity_logs.put({
+                  id: generateUuid(),
+                  caseId,
+                  entityType: 'doctor',
+                  entityId: createdDoc.id,
+                  action: 'create',
+                  summary: `ქეისის რეგისტრაციისას ავტომატურად დაემატა ექიმი: ${createdDoc.fullName}`,
+                  performedBy: user.id,
+                  performedByName: user.fullName,
+                  performedAt: now,
+                });
+              }
+            }
+
+            if (resolvedDoc && !linkedDoctorIds.has(resolvedDoc.id)) {
+              linkedDoctorIds.add(resolvedDoc.id);
+              await db.case_doctors.put({
+                id: generateUuid(),
+                caseId,
+                doctorId: resolvedDoc.id,
+                organizationId: resolvedOrgId || resolvedDoc.organizationIds[0],
+                roleInCase: dEntry.roleInCase,
+                snapshotPhone: resolvedDoc.phone,
+                snapshotEmail: resolvedDoc.email,
+                nextAction: dEntry.nextAction?.trim() || undefined,
+                createdAt: now,
+                updatedAt: now,
+                createdBy: user.id,
+                updatedBy: user.id,
+              });
+            }
           }
         }
 
@@ -542,6 +715,165 @@ export class DexieRepository {
     });
   }
 
+  async createAndLinkOrganization(params: {
+    caseId: string;
+    orgData: {
+      legalName: string;
+      taxId?: string;
+      municipality?: string;
+      address?: string;
+      branchName?: string;
+      phone?: string;
+      email?: string;
+      directorName?: string;
+      adminResponsible?: string;
+      contactName?: string;
+      contactPhone?: string;
+      nextAction?: string;
+    };
+    user: SafeUser;
+  }): Promise<{ org: Organization; link: CaseOrganizationLink; createdNew: boolean }> {
+    const { caseId, orgData, user } = params;
+    const now = new Date().toISOString();
+    const allOrgs = await db.organizations.toArray();
+    let org = findMatchingOrganization(allOrgs, {
+      legalName: orgData.legalName,
+      taxId: orgData.taxId,
+    });
+    let createdNew = false;
+
+    if (!org) {
+      createdNew = true;
+      org = {
+        id: generateUuid(),
+        legalName: orgData.legalName.trim(),
+        taxId: (orgData.taxId || '').trim(),
+        address: (orgData.address || '').trim(),
+        municipality: (orgData.municipality || 'თბილისი').trim(),
+        phone: orgData.phone?.trim() || undefined,
+        email: orgData.email?.trim() || undefined,
+        directorName: orgData.directorName?.trim() || undefined,
+        adminResponsible: orgData.adminResponsible?.trim() || orgData.contactName?.trim() || undefined,
+        branches: orgData.branchName?.trim()
+          ? [
+              {
+                id: generateUuid(),
+                name: orgData.branchName.trim(),
+                address: (orgData.address || '').trim(),
+                municipality: (orgData.municipality || 'თბილისი').trim(),
+                isPrimary: true,
+              },
+            ]
+          : [],
+        contacts: [],
+        createdAt: now,
+        updatedAt: now,
+        createdBy: user.id,
+        updatedBy: user.id,
+      };
+      await this.saveOrganization(org, user);
+    }
+
+    const link: CaseOrganizationLink = {
+      id: generateUuid(),
+      caseId,
+      organizationId: org.id,
+      branchName: orgData.branchName?.trim() || org.branches[0]?.name || undefined,
+      snapshotAddress: org.address,
+      responsibleContactName: orgData.contactName?.trim() || org.adminResponsible || org.directorName,
+      responsibleContactPhone: orgData.contactPhone?.trim() || org.phone,
+      responsibleContactEmail: org.email,
+      nextAction: orgData.nextAction?.trim() || undefined,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: user.id,
+      updatedBy: user.id,
+    };
+    await this.linkOrganizationToCase(link, user);
+    return { org, link, createdNew };
+  }
+
+  async createAndLinkDoctor(params: {
+    caseId: string;
+    doctorData: {
+      fullName: string;
+      specialty?: string;
+      position?: string;
+      phone?: string;
+      email?: string;
+      organizationId?: string;
+      roleInCase: CaseDoctorRole;
+      nextAction?: string;
+    };
+    user: SafeUser;
+  }): Promise<{ doctor: Doctor; link: CaseDoctor; createdNew: boolean }> {
+    const { caseId, doctorData, user } = params;
+    const now = new Date().toISOString();
+    const allDoctors = await db.doctors.toArray();
+    let matchedDoc = findMatchingDoctor(allDoctors, doctorData.fullName);
+    let createdNew = false;
+    let resolvedDoc: Doctor;
+
+    if (!matchedDoc) {
+      createdNew = true;
+      resolvedDoc = {
+        id: generateUuid(),
+        fullName: doctorData.fullName.trim(),
+        specialty: doctorData.specialty?.trim() || 'ექიმი',
+        position: doctorData.position?.trim() || 'ექიმი',
+        phone: doctorData.phone?.trim() || undefined,
+        email: doctorData.email?.trim() || undefined,
+        organizationIds: doctorData.organizationId ? [doctorData.organizationId] : [],
+        createdAt: now,
+        updatedAt: now,
+        createdBy: user.id,
+        updatedBy: user.id,
+      };
+      await this.saveDoctor(resolvedDoc, user);
+    } else if (doctorData.organizationId && !matchedDoc.organizationIds.includes(doctorData.organizationId)) {
+      resolvedDoc = {
+        ...matchedDoc,
+        organizationIds: [...matchedDoc.organizationIds, doctorData.organizationId],
+      };
+      await this.saveDoctor(resolvedDoc, user);
+    } else {
+      resolvedDoc = matchedDoc;
+    }
+
+    const link: CaseDoctor = {
+      id: generateUuid(),
+      caseId,
+      doctorId: resolvedDoc.id,
+      organizationId: doctorData.organizationId || resolvedDoc.organizationIds[0],
+      roleInCase: doctorData.roleInCase,
+      snapshotPhone: resolvedDoc.phone,
+      snapshotEmail: resolvedDoc.email,
+      nextAction: doctorData.nextAction?.trim() || undefined,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: user.id,
+      updatedBy: user.id,
+    };
+    await this.linkDoctorToCase(link, user);
+    return { doctor: resolvedDoc, link, createdNew };
+  }
+
+  async softDeleteCaseOrganization(linkId: string, user: SafeUser): Promise<void> {
+    const link = await db.case_organizations.get(linkId);
+    if (!link) return;
+    const now = new Date().toISOString();
+    await db.case_organizations.update(linkId, { deletedAt: now, updatedAt: now, updatedBy: user.id });
+    await db.cases.update(link.caseId, { lastActivityAt: now });
+  }
+
+  async softDeleteCaseDoctor(linkId: string, user: SafeUser): Promise<void> {
+    const link = await db.case_doctors.get(linkId);
+    if (!link) return;
+    const now = new Date().toISOString();
+    await db.case_doctors.update(linkId, { deletedAt: now, updatedAt: now, updatedBy: user.id });
+    await db.cases.update(link.caseId, { lastActivityAt: now });
+  }
+
   async saveOrder(order: Order, user: SafeUser): Promise<void> {
     const now = new Date().toISOString();
     const existing = await db.orders.get(order.id);
@@ -585,6 +917,58 @@ export class DexieRepository {
       performedBy: user.id,
       performedByName: user.fullName,
     });
+  }
+
+  async createAndLinkCommission(params: {
+    caseId: string;
+    commissionData: {
+      name: string;
+      type?: string;
+      chairName?: string;
+      membersText?: string;
+      stageNote?: string;
+    };
+    user: SafeUser;
+  }): Promise<{ commission: Commission; link: CaseCommission }> {
+    const { caseId, commissionData, user } = params;
+    const now = new Date().toISOString();
+    const memberNames = (commissionData.membersText || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const commission: Commission = {
+      id: generateUuid(),
+      name: commissionData.name.trim(),
+      type: commissionData.type?.trim() || 'შემოწმების ჯგუფი',
+      creationBasis: commissionData.stageNote?.trim() || 'ქეისის ფარგლებში შექმნილი ჯგუფი',
+      chairName: commissionData.chairName?.trim() || user.fullName,
+      members: memberNames.map((fullName) => ({
+        id: generateUuid(),
+        fullName,
+        position: 'სპეციალისტი',
+        roleInGroup: 'member',
+      })),
+      createdAt: now,
+      updatedAt: now,
+      createdBy: user.id,
+      updatedBy: user.id,
+    };
+    await this.saveCommission(commission, user);
+
+    const link: CaseCommission = {
+      id: generateUuid(),
+      caseId,
+      commissionId: commission.id,
+      stageNote: commissionData.stageNote?.trim() || undefined,
+      assignedDate: getTbilisiDateISO(),
+      createdAt: now,
+      updatedAt: now,
+      createdBy: user.id,
+      updatedBy: user.id,
+    };
+    await this.linkCommissionToCase(link, user);
+    return { commission, link };
   }
 
   async saveVisit(visit: Visit, user: SafeUser): Promise<void> {
