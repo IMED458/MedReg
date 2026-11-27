@@ -1,0 +1,88 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isActiveUser() {
+      return isAuthenticated() && userDoc().isActive == true;
+    }
+
+    function hasRole(roles) {
+      return isActiveUser() && userDoc().role in roles;
+    }
+
+    function isAdmin() {
+      return hasRole(['admin']);
+    }
+
+    function canEditCases() {
+      return hasRole(['admin', 'supervisor', 'inspector']);
+    }
+
+    match /users/{uid} {
+      allow read: if isActiveUser() && (request.auth.uid == uid || hasRole(['admin', 'supervisor']));
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /settings/{docId} {
+      allow read: if isActiveUser();
+      allow write: if isAdmin();
+    }
+
+    match /cases/{caseId} {
+      allow read: if isActiveUser() && (
+        hasRole(['admin', 'supervisor', 'viewer']) ||
+        resource.data.assignedTo == request.auth.uid ||
+        request.auth.uid in resource.data.collaboratorIds
+      );
+      allow create: if canEditCases() && request.resource.data.createdBy == request.auth.uid;
+      allow update: if canEditCases();
+      allow delete: if isAdmin();
+    }
+
+    // განსაკუთრებული კატეგორიის პერსონალური მონაცემები (პაციენტები / განმცხადებლები)
+    match /patients/{patientId} {
+      allow read: if hasRole(['admin', 'supervisor', 'inspector']);
+      allow create, update: if canEditCases();
+      allow delete: if isAdmin();
+    }
+
+    match /applicants/{applicantId} {
+      allow read: if isActiveUser();
+      allow create, update: if canEditCases();
+      allow delete: if isAdmin();
+    }
+
+    // ოპერაციული კოლექციები
+    match /{collection}/{docId} {
+      allow read: if isActiveUser() && collection in [
+        'organizations', 'doctors', 'reviewers', 'commissions',
+        'case_organizations', 'case_doctors', 'case_commissions', 'case_links',
+        'case_participants', 'visits', 'inspection_acts', 'orders',
+        'document_requests', 'correspondence', 'review_assignments',
+        'tasks', 'reminders', 'attachments', 'comments', 'custom_field_values'
+      ];
+      allow create, update: if canEditCases() && collection in [
+        'organizations', 'doctors', 'reviewers', 'commissions',
+        'case_organizations', 'case_doctors', 'case_commissions', 'case_links',
+        'case_participants', 'visits', 'inspection_acts', 'orders',
+        'document_requests', 'correspondence', 'review_assignments',
+        'tasks', 'reminders', 'attachments', 'comments', 'custom_field_values'
+      ];
+      allow delete: if isAdmin();
+    }
+
+    // შეუცვლელი აუდიტის ჟურნალი (მხოლოდ დამატება, წაშლა/შეცვლა აკრძალულია)
+    match /activity_logs/{logId} {
+      allow read: if hasRole(['admin', 'supervisor']);
+      allow create: if isActiveUser() && request.resource.data.performedBy == request.auth.uid;
+      allow update, delete: if false;
+    }
+  }
+}
