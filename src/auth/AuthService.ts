@@ -47,8 +47,16 @@ class OpenAccessAdapter implements IAuthAdapter {
   readonly mode = 'local' as const;
 
   async ensureInitialAdmin(): Promise<void> {
-    const activeAdmin = await db.users.filter((user) => user.role === 'admin' && user.isActive && !user.deletedAt).first();
-    if (activeAdmin) return;
+    const existingImedo = await db.users.where('username').equals('imedo').first();
+    if (existingImedo) {
+      if (existingImedo.fullName !== 'გიორგი იმედაშვილი') {
+        await db.users.update(existingImedo.id, {
+          fullName: 'გიორგი იმედაშვილი',
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      return;
+    }
     const now = new Date().toISOString();
     const id = 'open-access-admin';
     const { passwordHash, passwordSalt } = await this.createLocalPasswordRecord('imed458');
@@ -57,7 +65,7 @@ class OpenAccessAdapter implements IAuthAdapter {
       username: 'imedo',
       passwordHash,
       passwordSalt,
-      fullName: 'იმედო (ადმინისტრატორი)',
+      fullName: 'გიორგი იმედაშვილი',
       position: 'სისტემის ადმინისტრატორი',
       department: 'სამედიცინო საქმიანობის კონტროლის სამსახური',
       phone: '',
